@@ -1,0 +1,175 @@
+---
+title: "Data 624 Homework 2"
+author: "Joao De Oliveira"
+date: "2026-02-21"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(fpp3)
+```
+
+## Introduction
+In this report, I will be answering questions 1, 2, 3, 4, and 7 from the
+5.11 section from the Hyndman online Forecasting book
+
+
+## Question 1
+Produce forecasts for the following series using whichever of NAIVE(y), SNAIVE(y) or RW(y ~ drift()) is more appropriate in each cas-e:
+
+- Australian Population (global_economy)
+- Bricks (aus_production)
+- NSW Lambs (aus_livestock)
+- Household wealth (hh_budget).
+- Australian takeaway food turnover (aus_retail).
+
+
+```{r exercise1-1}
+aus_pop <- global_economy |>
+  filter(Country == "Australia") |>
+  select(Year, Population)
+
+aus_pop |>
+  model(RWdrift = RW(Population ~ drift())) |>
+  forecast(h = 10) |>
+  autoplot(aus_pop)
+```
+
+
+```{r exercise1-2}
+bricks_clean <- bricks |>
+  filter(!is.na(Bricks))
+
+fit_bricks <- bricks_clean |>
+  model(SNaive = SNAIVE(Bricks))
+
+fc_bricks <- fit_bricks |>
+  forecast(h = "2 years")
+
+autoplot(fc_bricks, bricks_clean) +
+  labs(title = "Bricks — Seasonal Naive Forecast (2 years)",
+       x = "Quarter", y = "Bricks")
+```
+
+
+```{r exercise1-3}
+nsw_lambs <- aus_livestock |>
+  filter(State == "New South Wales", Animal == "Lambs") |>
+  select(Month, Count)
+
+nsw_lambs |>
+  model(SNaive = SNAIVE(Count)) |>
+  forecast(h = "2 years") |>
+  autoplot(nsw_lambs)
+```
+
+
+```{r exercise1-4}
+hh_budget |>
+  model(RWdrift = RW(Wealth ~ drift())) |>
+  forecast(h = 10) |>
+  autoplot(hh_budget)
+```
+
+
+```{r exercise1-5}
+takeaway_aus <- aus_retail |>
+  filter(Industry == "Cafes, restaurants and takeaway food services") |>
+  index_by(Month) |>                         
+  summarise(Turnover = sum(Turnover, na.rm = TRUE))
+
+takeaway_aus |>
+  model(SNaive = SNAIVE(Turnover)) |>
+  forecast(h = "2 years") 
+  autoplot(takeaway_aus, Turnover) +
+  labs(title = "Australian Takeaway Food Turnover — Seasonal Naive Forecast")
+```
+
+In this case I aggregated all the states (summing all states' monthly turnover) 
+to be able to plot entire Australia's turnover series. 
+
+
+Australian population and household wealth exhibit clear long-term trends with no
+seasonality, so I used random walk models with drift. Bricks production, NSW lamb
+slaughter, and takeaway food turnover display strong seasonal patterns, making 
+seasonal naïve forecasts more appropriate. These models provide simple baseline 
+forecasts that preserve the dominant features of each series.
+
+
+## Question 2
+Use the Facebook stock price (data set gafa_stock) to do the following:
+
+a. Produce a time plot of the series.
+
+```{r exercise2-a}
+facebook <- gafa_stock |>
+  filter(Symbol == "FB")
+
+autoplot(facebook, Close) +
+  labs(title = "Facebook Stock Daily Closing Price",
+       x = "Date", y = "Closing Price [USD]")
+```
+
+The Facebook stock price shows an overall upward trend with substantial day-to-day
+volatility and no clear seasonality, which is typical for financial time series.
+
+b. Produce forecasts using the drift method and plot them.
+
+```{r exercise2-b}
+# facebook trading-day data
+fb <- gafa_stock |>
+  filter(Symbol == "FB") |>
+  select(Date, Close) |>
+  arrange(Date) |>
+  as_tibble()
+
+# daily calendar and join prices onto it
+fb_daily_tbl <- tibble(Date = seq(min(fb$Date), max(fb$Date), by = "day")) |>
+  left_join(fb, by = "Date") |>
+  tidyr::fill(Close, .direction = "down")   # carry last trading close forward
+
+# regular tsibble
+fb_daily <- fb_daily_tbl |>
+  as_tsibble(index = Date) |>
+  tsibble::update_tsibble(regular = TRUE)
+
+fc_drift <- fb_daily |>
+  model(RWdrift = RW(Close ~ drift())) |>
+  forecast(h = 30)
+
+autoplot(fc_drift, fb_daily) +
+  labs(title = "Facebook Closing Price — Drift Forecast (30 days, daily regularized)",
+       x = "Date", y = "Close (USD)")
+```
+
+
+c. Show that the forecasts are identical to extending the line drawn between the first and last observations.
+
+```{r exercise2-c}
+# compute slope between first and last obs
+y1 <- fb_daily |> as_tibble() |> slice(1) |> pull(Close)
+yT <- fb_daily |> as_tibble() |> slice(n()) |> pull(Close)
+Tn <- nrow(fb_daily)
+slope <- (yT - y1) / (Tn - 1)
+
+fc_tbl <- fc_drift |>
+  as_tibble() |>
+  select(Date, drift_mean = .mean)
+
+ggplot() +
+  geom_line(data = fb_daily |> as_tibble(), aes(Date, Close)) +
+  geom_line(data = fc_tbl, aes(Date, drift_mean)) +
+  geom_abline(intercept = y1, slope = slope, linetype = "dashed") +
+  labs(title = "Drift forecast equals extension of the first–last line",
+       x = "Date", y = "Close (USD)")
+```
+
+d. Try using some of the other benchmark functions to forecast the same data set. Which do you think is best? Why?
+
+
