@@ -1,0 +1,121 @@
+---
+title: "DATA 624 Homework 5"
+author: "Joao De Oliveira"
+date: "2026-03-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+## Introduction
+In this report, I will be answering questions 1, 5, 6, 7, and 8 in the 8th chapter
+from the Hyndman book.
+
+
+## Question 1
+Figure 8.31 shows the ACFs for 36 random numbers, 360 random numbers and 1,000 
+random numbers.
+
+(a) Explain the differences among these figures. Do they all indicate that the 
+data are white noise?
+
+The three ACF plots look different mainly because of the different sample sizes.
+The series with 36 observations looks much noisier, with larger mins and maxs, 
+since small samples produce more random variation in the sample autocorrelations.
+As the sample size increases to 360 and then 1,000 observations, the ACF values 
+stay closer to zero and the plots look more stable. Even though the plots look 
+different, all three are consistent with white noise since none of them show a 
+clear pattern (increasing, decreasing, or seasonal structure). In fact, the 
+autocorrelations fluctuate randomly around zero, which is what is expected 
+from a white noise process.
+
+(b) Why are the critical values at different distances from the mean of zero? 
+Why are the autocorrelations different in each figure when they each refer to 
+white noise?
+
+The critical values are at different distances from zero because they depend on 
+the sample size. The approximate critical values for white noise are + or - 1.96/√T,
+where T is the number of observations. When the sample size is small, there is 
+more sampling variability. As the sample size increases, the bounds become narrower
+because the  estimates become more precise. Each plot comes from a different random
+sample, which makes the white noise representations to be different. In theory, 
+white noise has zero autocorrelation at all lags, but in practice the estimated 
+autocorrelations will vary slightly due to random sampling. Larger samples produce
+estimates that are closer to zero.
+
+
+## Question 5
+For your retail data (from Exercise 3 in Section 2.10), find the appropriate order
+of differencing (after transformation if necessary) to obtain stationary data.
+
+
+```{r}
+library(readxl)
+library(forecast)
+library(ggplot2)
+
+retaildata <- read_excel("C:\\Users\\jpfer\\Downloads\\retail.xlsx", skip = 1)
+```
+
+
+```{r}
+myts <- ts(retaildata[,"A3349399C"],
+           frequency = 12,
+           start = c(1982,4))
+```
+
+
+```{r}
+autoplot(myts) +
+  labs(title = "Monthly Australian Clothing Retail Sales",
+       y = "Retail Turnover")
+```
+
+Trasformation needed?
+
+```{r}
+lambda <- BoxCox.lambda(myts)
+lambda
+```
+
+Since lambda is 0.02074707, which is very close to zero, I will apply a log 
+transformation.
+
+
+```{r}
+myts_trans <- log(myts)
+autoplot(myts_trans) +
+  labs(title = "Log Transformed Clothing Retail Series",
+       y = "log(Clothing Retail Turnover)")
+```
+
+
+The original retail series shows an upward trend and strong seasonal patterns.
+In the original plot, the seasonal extremes become larger as the level of the 
+series increases, indicating that the variance grows over time. Because of this, I
+considered a Box-Cox transformation. The estimated parameter was 0.0207, which is
+very close to zero. This suggests that a log transformation is appropriate.
+
+After applying the log transformation, the seasonal fluctuations seem more stable
+and the variance is more consistent over time. The transformed series still shows
+the same general trend and seasonality, but the scale is more suitable for further 
+time series analysis.
+
+```{r}
+ndiffs(myts_trans)
+nsdiffs(myts_trans)
+```
+
+Since ndiffs = 1 and nsdiffs = 1, we need 1 seasonal difference (lag 12) and 
+1 regular difference. 
+
+```{r}
+myts_diff <- diff(myts_trans, lag = 12)
+myts_diff2 <- diff(myts_diff)
+
+autoplot(myts_diff2)
+```
+
