@@ -2,13 +2,21 @@
 title: "DATA 624 Homework 5"
 author: "Joao De Oliveira"
 date: "2026-03-10"
-output: html_document
+output:
+  pdf_document:
+    latex_engine: xelatex
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+```{r}
+library(readxl)
+library(forecast)
+library(ggplot2)
+library(fpp2)
+```
 
 ## Introduction
 In this report, I will be answering questions 1, 5, 6, 7, and 8 in the 8th chapter
@@ -53,11 +61,8 @@ of differencing (after transformation if necessary) to obtain stationary data.
 
 
 ```{r}
-library(readxl)
-library(forecast)
-library(ggplot2)
-
-retaildata <- read_excel("C:\\Users\\jpfer\\Downloads\\retail.xlsx", skip = 1)
+retaildata_raw <- "https://raw.githubusercontent.com/JDO-MSDS/Data-624/refs/heads/main/Homework%205/retail%20-%20Data1.csv"
+retaildata <- read.csv(retaildata_raw, skip = 1)
 ```
 
 
@@ -94,28 +99,780 @@ autoplot(myts_trans) +
 
 
 The original retail series shows an upward trend and strong seasonal patterns.
-In the original plot, the seasonal extremes become larger as the level of the 
-series increases, indicating that the variance grows over time. Because of this, I
-considered a Box-Cox transformation. The estimated parameter was 0.0207, which is
-very close to zero. This suggests that a log transformation is appropriate.
+The seasonal extremes become larger as the level of the series increases, indicating
+that the variance grows over time. Because of this, I considered a Box-Cox 
+transformation. The estimated parameter was 0.0207, which is very close to zero.
+This suggests that a log transformation is appropriate.
 
-After applying the log transformation, the seasonal fluctuations seem more stable
-and the variance is more consistent over time. The transformed series still shows
-the same general trend and seasonality, but the scale is more suitable for further 
-time series analysis.
+After applying the log transformation, the seasonal fluctuations seem a little more
+stable and the variance is more consistent over time. However, the transformed 
+series still shows the same general trend and seasonality, but the scale is more
+suitable for further time series analysis.
 
 ```{r}
 ndiffs(myts_trans)
 nsdiffs(myts_trans)
 ```
 
-Since ndiffs = 1 and nsdiffs = 1, we need 1 seasonal difference (lag 12) and 
-1 regular difference. 
+Since ndiffs = 1 and nsdiffs = 1, we need one seasonal difference (lag 12) and 
+one regular difference. 
 
 ```{r}
 myts_diff <- diff(myts_trans, lag = 12)
 myts_diff2 <- diff(myts_diff)
 
-autoplot(myts_diff2)
+autoplot(myts_diff2) +
+   labs(title = "Differenced Log-Transformed Series",
+       x = "Time",
+       y = "Differenced log(Turnover)")
 ```
 
+ACF of differenced series
+
+```{r}
+ggAcf(myts_diff2) +
+  labs(title = "ACF of Differenced Log-Transformed Series")
+```
+
+The transformed series still shows both trend and seasonality, so we need difference
+to make it stationary. Since the data is monthly but with a strong yearly seasonal
+pattern, one seasonal difference with lag 12 makes sense to remove the upward trend.
+
+After applying both one seasonal and one regular difference, the series fluctuates 
+around a roughly constant mean. Also, now there is no strong seasonal pattern anymore. 
+So, the appropriate differencing order is one regular difference and one 
+seasonal difference at lag 12.
+
+
+## Question 6
+Use R to simulate and plot some data from simple ARIMA models.
+
+(a) Use the following R code to generate data from an AR(1) model with  
+ϕ1=0.6 and σ2=1. The process starts with y1=0.
+
+```{r}
+set.seed(1234)
+
+y <- ts(numeric(100))
+e <- rnorm(100)
+
+for(i in 2:100)
+  y[i] <- 0.6*y[i-1] + e[i]
+
+autoplot(y) +
+  labs(
+    title = "Simulated AR(1) Series",
+    x = "Time",
+    y = "y"
+  )
+```
+The simulated series shows persistence over time, meaning that observations tend
+to be related to their recent past values. Because ϕ_{1}=0.6, the series tends to
+move smoothly and values stay above or below zero for short periods before changing
+direction.
+
+(b) Produce a time plot for the series. How does the plot change as you change ϕ_{1}?
+
+
+```{r}
+simulate_ar1 <- function(phi, n = 100){
+  y <- ts(numeric(n))
+  e <- rnorm(n)
+  
+  for(i in 2:n)
+    y[i] <- phi*y[i-1] + e[i]
+  
+  y
+}
+
+y1 <- simulate_ar1(0.2)
+y2 <- simulate_ar1(0.5)
+y3 <- simulate_ar1(0.8)
+
+autoplot(cbind(phi_0.2 = y1,
+               phi_0.5 = y2,
+               phi_0.8 = y3),
+         facets = TRUE) +
+  labs(title = "AR1 Processes with Different Values of phi",
+       x = "Time",
+       y = "y")
+```
+
+By looking at the output plots for different ϕ, we can see that when ϕ~1~ is small (0.2),
+the series seems like white noise, it looks random since it is constantly changing
+direction. As ϕ~1~ increases, the series is smoother and with less changing in direction, meaning 
+that values tend to remain above or below the mean for longer periods. For ϕ~1~=0.8, 
+the series has long swings (trends) and a strong dependence on past values.
+
+
+(c) Write your own code to generate data from an MA(1) model with $θ_{1}=0.6$ and 
+$σ^2=1$.
+
+MA(1) model: $y_{t}= ε_{t} + θ_{1}ε_{t-1}$ where $θ_{1}=0.6$ and $σ^2=1$
+
+
+```{r}
+set.seed(1234)
+
+y_ma1 <- ts(numeric(100))
+e <- rnorm(100)
+
+for(i in 2:100){
+  y_ma1[i] <- e[i] + 0.6 * e[i-1]
+}
+
+head(y_ma1, 10)
+```
+
+
+(d) Produce a time plot for the series. How does the plot change as you change θ~1~?
+
+
+```{r}
+autoplot(y_ma1) +
+  labs(title = "Simulated MA(1) Series (theta = 0.6)",
+       x = "Time",
+       y = "y")
+```
+
+```{r}
+simulate_ma1 <- function(theta, n = 100){
+  y <- ts(numeric(n))
+  e <- rnorm(n)
+  
+  for(i in 2:n){
+    y[i] <- e[i] + theta * e[i-1]
+  }
+  
+  y
+}
+
+set.seed(1234)
+
+y1 <- simulate_ma1(0.2)
+y2 <- simulate_ma1(0.5)
+y3 <- simulate_ma1(0.8)
+
+autoplot(cbind(theta_0.2 = y1,
+               theta_0.5 = y2,
+               theta_0.8 = y3),
+         facets = TRUE) +
+  labs(title = "MA(1) Processes with Different Values of theta",
+       x = "Time",
+       y = "y")
+```
+
+When θ~1~ is small, the series behaves similarly to white noise with little a
+clear dependence between observations. As θ~1~ increases, neighboring observations
+are more related to each other (short memory). However, unlike in the AR(1) process, the
+effect of extremes does not persist for long periods, that's why the series still changes
+direction frequently.
+
+
+(e) Generate data from an ARMA(1,1) model with $ϕ_{1}=0.6$, $θ_{1}=0.6$ and 
+$σ_{2}=1$.
+
+ARMA(1,1) model: $y_{t} = ϕ_{1}y_{t-1} + ε_{t} + θ_{1}ε_{t-1}$
+
+
+```{r}
+set.seed(1234)
+
+y_arma <- ts(numeric(100))
+e <- rnorm(100)
+
+for(i in 2:100){
+  y_arma[i] <- 0.6*y_arma[i-1] + e[i] + 0.6*e[i-1]
+}
+
+# time plot
+autoplot(y_arma) +
+  labs(title = "Simulated ARMA(1,1) Series (phi = 0.6, theta = 0.6)",
+       x = "Time",
+       y = "y")
+```
+
+The ARMA(1,1) series combines characteristics of both AR and MA processes. The 
+autoregressive component makes the series more persistence, while the MA component
+adds short-term effects from recent shocks/behavior. So, the series seems smoother
+than white noise but still has clear fluctuations over time.
+
+(f) Generate data from an AR(2) model with $ϕ_{1}=−0.8$, $ϕ_{2}=0.3$ and $σ_{2}=1$.
+(Note that these parameters will give a non-stationary series.)
+
+AR(2) model: $y_{t} = ϕ_{1}y_{t-1} + ϕ_{2}y_{t-2} + ε_{t}$ 
+with $ϕ_{1}=-0.8$ , $ϕ_{2}=0.3$ and $σ_{2}=1$ 
+
+```{r}
+set.seed(1234)
+
+y_ar2 <- ts(numeric(100))
+e <- rnorm(100)
+
+for(i in 3:100){
+  y_ar2[i] <- -0.8*y_ar2[i-1] + 0.3*y_ar2[i-2] + e[i]
+}
+
+# time plot
+autoplot(y_ar2) +
+  labs(title = "Simulated AR(2) Series (phi1 = -0.8, phi2 = 0.3)",
+       x = "Time",
+       y = "y")
+```
+
+The simulated AR(2) series has an oscillating pattern where the values repeatedly
+switch between positive and negative (with the same amplitude). Over time, the 
+oscillations become larger (more amplitude), causing the series to diverge away 
+from zero, indicating that the process is non-stationary.
+
+
+(g) Graph the latter two series and compare them.
+
+```{r}
+autoplot(cbind(ARMA11 = y_arma, AR2 = y_ar2), facets = TRUE) +
+  labs(title = "Comparison of Simulated ARMA(1,1) and AR(2) Series",
+       x = "Time",
+       y = "y")
+```
+The two series have pretty difference behavior. The ARMA(1,1) series fluctuates 
+around zero and remains relatively stable over time. The size of the fluctuations
+is pretty consistent, which is typical of a stationary time series.
+
+In contrast, the AR(2) series shows oscillations that grow larger over time. The
+values constantly change between positive and negative, but the size of these swings
+increases with time. This causes the series to diverge away from zero, creating
+the growing behavior seen in the plot.
+
+
+## Question 7
+Consider wmurders, the number of women murdered each year (per 100,000 standard 
+population) in the United States.
+
+(a) By studying appropriate graphs of the series in R, find an appropriate 
+ARIMA(p,d,q) model for these data.
+
+```{r}
+data(wmurders)
+```
+
+```{r}
+autoplot(wmurders) +
+  labs(title = "Women Murdered per 100,000 Population in the US",
+       subtitle = "Original Time Series",
+       x = "Year",
+       y = "Murders per 100,000") +
+  theme_minimal() +
+  geom_point(color = "red", size = 2) +
+  geom_line(color = "red", linewidth = 1)
+```
+
+The time series does not look stationary since the mean changes over time. The 
+rate of women murdered rises from mid 1950s into the mid 1970s, stays relatively
+high through the 1980s and early 1990s, and then declines noticeably toward the 
+end of the series. Since the series behavior changes over time rather than 
+fluctuating around a constant mean, differencing is needed before fitting an ARIMA
+model.
+
+```{r}
+# first difference
+wmurders_diff <- diff(wmurders)
+
+autoplot(wmurders_diff) +
+  labs(title = "First Differenced Women Murder Series",
+       x = "Year",
+       y = "Differenced rate")
+```
+
+The first differenced series fluctuates around a more stable mean now making first
+difference appropriate.
+
+
+Checking **ACF and PACF**
+
+```{r}
+ggAcf(wmurders_diff) +
+  labs(title = "ACF of First-Differenced Series")
+
+ggPacf(wmurders_diff) +
+  labs(title = "PACF of First-Differenced Series")
+```
+
+### (a)
+
+The original series is not stationary because its mean changes over time. The 
+changing level explained above suggests that differencing is required. After taking
+the first difference, the series fluctuates around a roughly constant mean with 
+no clear trend, so one difference is sufficient (even though the ndiffs(wmurders)
+gave me 2).
+
+The ACF of the differenced series shows a notable spike at lag 2 while the other
+lags fall mostly within the confidence bounds. The PACF also shows a significant
+spike at lag 2. This pattern suggests an autoregressive structure of order 2 after
+differencing. Therefore, an appropriate model for the series is:
+
+ARIMA(2,1,0)
+
+Confirming that the model makes sense
+
+```{r}
+Arima(wmurders, order = c(2,1,0))
+```
+
+Checking if residuals behave like white noise
+
+```{r}
+checkresiduals(Arima(wmurders, order = c(2,1,0)))
+```
+It is confirmed that the residuals behave like white noise.
+
+
+(b) Should you include a constant in the model? Explain.
+
+Because the model includes one difference (d = 1), adding a constant would imply
+a linear trend in the original series. The time plot of the data does not show a
+linear trend over the entire period, so including a constant is not appropriate.
+Therefore, the ARIMA(2,1,0) model should be fitted without a constant.
+
+(c) Write this model in terms of the backshift operator.
+
+Since p=2, d=1, and q=0
+
+My ARIMA model is: $ϕ(B)(1-B)y_{t}=ε_{t}$
+
+The AR(2) polynomial is $ϕ(B)= 1 - ϕ_{1}B - ϕ_{2}B^2$
+
+finding ϕ~1~ and ϕ~2~
+
+```{r}
+Arima(wmurders, order = c(2,1,0))
+```
+
+Since $ϕ_{1}=-0.0572$ and $ϕ_{2}=0.2967$
+
+Then, $ϕ(B) = 1 - (-0.0572)B - 0.2967B^2$
+
+If we substitute ϕ(B) in the ARIMA model:
+$(1 + 0.0572B - 0.2967B^2)(1-B)y_{t}=ε_{t}$
+
+
+(d) Fit the model using R and examine the residuals. Is the model satisfactory?
+
+Fit the model (as I did above)
+
+```{r}
+fit_wmurders <- Arima(wmurders, order = c(2,1,0))
+fit_wmurders
+```
+
+Check Residuals
+
+```{r}
+checkresiduals(fit_wmurders)
+```
+
+
+The residual time plot shows that the residuals fluctuate randomly around zero 
+with no obvious trend or pattern. The residual ACF shows that autocorrelations lie
+within the significance bounds. Also, the histogram of the residuals is approximately
+symmetric and bell-shaped, suggesting that the residuals are roughly normally distributed.
+
+Overall, these results suggest that the residuals behave like white noise, 
+indicating that the ARIMA(2,1,0) model gives a satisfactory fit to the data.
+
+
+(e) Forecast three times ahead. Check your forecasts by hand to make sure that you
+know how they have been calculated.
+
+
+```{r}
+fc_wmurders <- forecast(fit_wmurders, h = 3)
+fc_wmurders
+autoplot(fc_wmurders) +
+  labs(title = "Three-Step-Ahead Forecasts for Women Murder Rate",
+       x = "Year",
+       y = "Murder rate")
+```
+
+
+Checking by hand, which means to 
+
+```{r}
+# last observed values
+yT   <- tail(wmurders, 1)
+yT1  <- tail(wmurders, 2)[1]
+yT2  <- tail(wmurders, 3)[1]
+
+# last two differences
+wT   <- yT - yT1
+wT1  <- yT1 - yT2
+
+# AR coefficients 
+phi1 <- coef(fit_wmurders)["ar1"]
+phi2 <- coef(fit_wmurders)["ar2"]
+
+# forecasts differenced series
+w_hat1 <- phi1 * wT + phi2 * wT1
+w_hat2 <- phi1 * w_hat1 + phi2 * wT
+w_hat3 <- phi1 * w_hat2 + phi2 * w_hat1
+
+# convert back to original scale
+y_hat1 <- yT + w_hat1
+y_hat2 <- y_hat1 + w_hat2
+y_hat3 <- y_hat2 + w_hat3
+
+c(y_hat1, y_hat2, y_hat3)
+fc_wmurders$mean
+```
+
+Using the estimated coefficients ar1 and ar2, each forecast depends on the two 
+most recent differenced values. The 1 step ahead forecast is calculated first, and 
+the two-step and three-step forecasts are then obtained using the previous one 
+using the earlier forecasted differences. Converting these back to the original 
+scale gives the final forecasts for the murder rate.
+
+The hand calculations match the values produced by R, which confirms that the 
+forecasts are accurate.
+
+
+(f) Create a plot of the series with forecasts and prediction intervals for the next three periods shown.
+
+```{r}
+fc_wmurders <- forecast(fit_wmurders, h = 3)
+
+autoplot(fc_wmurders) +
+  labs(title = "Women Murder Rate with 3-Step-Ahead Forecasts",
+       x = "Year",
+       y = "Murder rate")
+```
+
+
+(g) Does auto.arima() give the same model you have chosen? If not, which model do you think is better?
+
+
+```{r}
+auto.arima(wmurders)
+```
+
+The `auto.arima()` function selected an ARIMA(1,2,1) model, which is different than
+the ARIMA(2,1,0) I selected. The automatic model uses two differences, which may
+indicate over-differencing because the first-differenced series already seemed 
+stationary. Since the ARIMA(2,1,0) model produces satisfactory residual diagnostics
+and aligns with the behavior observed in the ACF and PACF plots, it is the preferred
+model.
+
+
+## Question 8
+Consider austa, the total international visitors to Australia (in millions) for the period 1980-2015.
+
+(a) Use auto.arima() to find an appropriate ARIMA model. What model was selected. Check that the residuals look like white noise. Plot forecasts for the next 10 periods.
+
+
+```{r}
+fit_austa <- auto.arima(austa)
+fit_austa
+```
+
+The model selected by auto.arima() is ARIMA(0,1,1) model with drift. The MA(1) 
+coefficient is 0.3006 and the drift term is 0.1735, meaning that there is a 
+gradual upward trend in the number of international visitors to Australia over time.
+
+Checking Residuals
+
+```{r}
+checkresiduals(fit_austa)
+```
+We can confirm that the residuals look like white noise and that there is no
+significant autocorrelation remaining. So, the model properly captures the structure
+of the series.
+
+
+```{r}
+forecast_austa <- forecast(fit_austa, h = 10)
+
+autoplot(forecast_austa) +
+  labs(title = "Forecasts of International Visitors to Australia",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+Forecasts for the next 10 periods show an upward trend in the number of international
+visitors to Australia. Naturally, the prediction intervals are larger with time (more uncertainty).
+
+
+(b) Plot forecasts from an ARIMA(0,1,1) model with no drift and compare these to 
+part a. Remove the MA term and plot again.
+
+
+ARIMA(0,1,1) with no drift
+```{r}
+fit_austa_nodrift <- Arima(austa, order = c(0,1,1), include.drift = FALSE)
+fit_austa_nodrift
+
+# plot with forecast
+fc_austa_nodrift <- forecast(fit_austa_nodrift, h = 10)
+
+autoplot(fc_austa_nodrift) +
+  labs(title = "ARIMA(0,1,1) Forecasts Without Drift",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+Now the forecasts without drift are flat when compared with (a) because the 
+model no longer includes a trend term. In part (a), the drift term produced forecasts
+that continued to increase over time. Without drift, the forecasts are more level
+and do not consider the long-run upward movement as strongly.
+
+If we remove the MA: ARIMA(0,1,0)
+
+```{r}
+fit_austa_r <- Arima(austa, order = c(0,1,0), include.drift = FALSE)
+fit_austa_r
+
+# plot with forecasts
+fc_austa_r <- forecast(fit_austa_r, h = 10)
+
+autoplot(fc_austa_r) +
+  labs(title = "ARIMA(0,1,0) Forecasts Without Drift",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+The forecasts from the ARIMA(0,1,1) model without drift and the ARIMA(0,1,0) model
+seem very similar. In both cases, the forecasts remain approximately flat at the
+last observed value of the series. This happens because both models use one 
+difference and do not include a drift term. Without drift, the models do not 
+project a trend, so the best forecast for future values is simply the most recent
+observation. The ARIMA(0,1,1) model accounts for short-term dependence through the
+MA term, while the ARIMA(0,1,0) model is a simple random walk. 
+
+(c) Plot forecasts from an ARIMA(2,1,3) model with drift. Remove the constant and see what happens.
+
+
+```{r}
+fit_austa_213_drift <- Arima(austa, order = c(2,1,3), include.drift = TRUE)
+fit_austa_213_drift
+
+# plot forecasts
+fc_austa_213_drift <- forecast(fit_austa_213_drift, h = 10)
+
+autoplot(fc_austa_213_drift) +
+  labs(title = "ARIMA(2,1,3) Forecasts with Drift",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+Without constant
+
+```{r}
+fit_austa_213_nodrift <- Arima(austa, order = c(2,1,3),
+                               include.drift = FALSE,
+                               method = "ML")
+fit_austa_213_nodrift
+
+# plot forecasts
+fc_austa_213_nodrift <- forecast(fit_austa_213_nodrift, h = 10)
+
+autoplot(fc_austa_213_nodrift) +
+  labs(title = "ARIMA(2,1,3) Forecasts without Drift",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+The forecasts for the ARIMA(2,1,3) model without drift still show an increasing 
+trend even though the constant term was removed. This happens because the 
+autoregressive structure, particularly the second AR coefficient which is close 
+to 1, produces strong persistence in the series.
+
+
+(d) Plot forecasts from an ARIMA(0,0,1) model with a constant. 
+Remove the MA term and plot again.
+
+ARIMA(0,0,1) with a constant
+
+```{r}
+fit_austa_001 <- Arima(austa, order = c(0,0,1), include.mean = TRUE)
+fit_austa_001
+
+# plot forecasts
+fc_austa_001 <- forecast(fit_austa_001, h = 10)
+
+autoplot(fc_austa_001) +
+  labs(title = "ARIMA(0,0,1) Forecasts with Constant",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+Remove MA: ARIMA(0,0,0)
+
+```{r}
+fit_austa_000 <- Arima(austa, order = c(0,0,0), include.mean = TRUE)
+fit_austa_000
+
+# plot forecasts
+fc_austa_000 <- forecast(fit_austa_000, h = 10)
+
+autoplot(fc_austa_000) +
+  labs(title = "ARIMA(0,0,0) Forecasts with Constant",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+
+The ARIMA(0,0,1) model with a constant produces forecasts that quickly gets close
+to the estimated mean of about 3.55 million. The MA term allows a short adjustment
+from the last observed value before the forecasts approaches the mean.
+
+When the MA term is removed, the ARIMA(0,0,0) model simply forecasts the mean 
+for all future periods. Both models ignore the strong upward trend in the data.
+
+
+(e) Plot forecasts from an ARIMA(0,2,1) model with no constant.
+
+ARIMA(0,2,1) with no constant
+
+```{r}
+fit_austa_021 <- Arima(austa, order = c(0,2,1), include.constant = FALSE)
+fit_austa_021
+
+# plot forecasts
+fc_austa_021 <- forecast(fit_austa_021, h = 10)
+
+autoplot(fc_austa_021) +
+  labs(title = "ARIMA(0,2,1) Forecasts without Constant",
+       x = "Year",
+       y = "Visitors [millions]")
+```
+The ARIMA(0,2,1) model without a constant produces forecasts that continue the 
+upward movement in the series. The prediction intervals widen rapidly, indicating
+increasing uncertainty in the future, as expected.
+
+
+## Question 9
+For the usgdp series:
+
+(a) if necessary, find a suitable Box-Cox transformation for the data;
+
+
+```{r}
+# plot to see behavior
+autoplot(usgdp) +
+  labs(title = "US GDP Time Series",
+       x = "Year",
+       y = "GDP")
+
+# box cox parameter
+lambda <- BoxCox.lambda(usgdp)
+lambda
+```
+
+
+The plot of the usgdp series shows a strong upward trend and increasing variability
+over time, suggesting that a transformation may be useful to stabilize the variance.
+
+The Box-Cox transformation parameter was estimated using BoxCox.lambda(), which gave
+lambda = 0.366. Since this value is between 0 and 1, a Box-Cox transformation is
+appropriate to reduce the increasing variance in the series.
+
+(b) fit a suitable ARIMA model to the transformed data using auto.arima();
+
+```{r}
+# using auto arima with previous calculated lambda
+fit_usgdp <- auto.arima(usgdp, lambda = lambda)
+fit_usgdp
+```
+
+The auto.arima() function selected ARIMA(2,1,0) with drift and got the following
+coefficients:
+Estimated coefficients:
+
+- AR(1) = 0.2795  
+- AR(2) = 0.1208  
+- Drift = 0.1829 
+
+This means that the GDP series required one difference (d = 1) to remove the trend,
+and the remaining dynamics are captured by two autoregressive terms. The drift 
+term represents the long-term upward growth in GDP.
+
+(c) try some other plausible models by experimenting with the orders chosen;
+
+Trying ARIMA(1,1,0), ARIMA(0,1,1), and ARIMA(1,1,1)
+
+```{r}
+fit1 <- Arima(usgdp, order = c(1,1,0), lambda = lambda)
+fit2 <- Arima(usgdp, order = c(0,1,1), lambda = lambda)
+fit3 <- Arima(usgdp, order = c(1,1,1), lambda = lambda)
+
+fit1
+fit2
+fit3
+```
+
+I tested ARIMA(1,1,0), ARIMA(0,1,1), and ARIMA(1,1,1).
+
+The resulting AIC values were:
+
+- ARIMA(1,1,0): AIC = −64.78  
+- ARIMA(0,1,1): AIC = −10.79  
+- ARIMA(1,1,1): AIC = −86.43  
+
+ARIMA(1,1,1) provided the best fit of the tested models, as it had the lowest AIC.
+However, the model selected earlier by auto.arima() (ARIMA(2,1,0) with drift - AIC = −115.11)
+still provides a better fit overall because it has a substantially lower AIC.
+
+So, the ARIMA(2,1,0) with drift still is the preferred model for the transformed 
+GDP series.
+
+
+(d) choose what you think is the best model and check the residual diagnostics;
+
+As explained above, the best model is ARIMA(2,1,0) since it has the lowest AIC.
+
+Residuals for ARIMA(2,1,0)
+
+```{r}
+checkresiduals(fit_usgdp)
+```
+
+The residual time plot shows that the residuals fluctuate randomly around zero 
+with no obvious patterns. The histogram of residuals appears approximately normally
+distributed. Also, the residual ACF shows no significant spikes outside the 
+confidence bounds, which means that there is little remaining autocorrelation.
+
+The Ljung–box test gives a p-value of 0.3617 (>0.05). Sp, we fail to reject the 
+null hypothesis that the residuals are independent.
+
+The residual diagnostics tells us that the ARIMA(2,1,0) with drift model provides
+an adequate fit to the transformed GDP series.
+
+
+(e) produce forecasts of your fitted model. Do the forecasts look reasonable?
+
+
+```{r}
+usgdp_fc <- forecast(fit_usgdp, h = 10)
+autoplot(usgdp_fc)
+```
+
+The forecasts show a continuation of the upward trend in US GDP. The prediction 
+intervals are larger as the forecast horizon increases, showing a greater 
+uncertainty in longer-term forecasts, as expected. The forecasts appear reasonable
+because they follow the long-term growth trend present in the historical GDP series 
+and considering the greater uncertainty over time.
+
+(f) compare the results with what you would obtain using ets() (with no transformation).
+
+```{r}
+fit_ets <- ets(usgdp)
+fit_ets
+
+usgdp_ets_fc <- forecast(fit_ets, h = 10)
+autoplot(usgdp_ets_fc)
+```
+
+
+Using ets(usgdp), the selected model was ETS(A,A,N) (additive error, additive trend,
+no seasonality). The ETS forecasts also show a continued upward trend in US GDP,
+similar to the forecasts from the ARIMA(2,1,0) with drift model. Both models seem
+tocapture the strong growth pattern in the data, and the forecasts appear very 
+similar. The main difference is that the ARIMA model used a Box-Cox transformation
+and differencing, while the ETS model directly models the level and trend components
+of the series.
