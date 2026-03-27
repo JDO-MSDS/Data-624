@@ -1,0 +1,51 @@
+---
+title: "DATA 624 Homework 6"
+author: "Joao De Oliveira"
+date: "2026-03-21"
+output:
+  pdf_document:
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+library(fpp2)
+```
+
+## Introduction
+In this report, I will be answering questions 1, 2, 3, 5, 6, 7, and 8 in the 9th chapter
+from the Hyndman book.
+
+
+## Question 1
+Consider monthly sales and advertising data for an automotive parts company (data set advert).
+
+(a) Plot the data using autoplot. Why is it useful to set facets=TRUE?
+
+Load Data
+
+```{r}
+advert
+```
+
+```{r}
+autoplot(advert, facets=TRUE)
+```
+
+It is helpful to set facets=TRUE because the dataset has 2 variables (advert and
+sales) with different ranges, so they should have different scales. Using facets=TRUE
+plots the variables in different panels with the appropriate scale for each variable.
+It is also much easier to understand and compare patterns over time. 
+
+
+(b) Fit a standard regression model  $y_{t}=a+b_{x_{t}}+η_{t}$ where yt denotes sales and xt 
+denotes advertising using the tslm() function.
+
+```{r}
+fit_reg <- tslm(sales ~ advert)
+summary(fit_reg)
+```
