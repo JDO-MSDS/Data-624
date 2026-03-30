@@ -1,0 +1,802 @@
+---
+title: "DATA 624 Project 1: Time Series Forecasting"
+author: "Joao De Oliveira"
+date: "2026-03-28"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    theme: flatly
+    highlight: tango
+    df_print: paged
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE, echo = TRUE)
+```
+
+
+## Libraries
+
+```{r}
+library(dplyr)
+library(tidyverse)
+library(forecast)
+library(writexl)
+```
+# Overview
+This project consists of 3 parts:
+
+**Part A – ATM Forecast, ATM624Data.xlsx**
+
+In part A, I want you to forecast how much cash is taken out of 4 different ATM machines for May 2010.  The data is given in a single file.  The variable ‘Cash’ is provided in hundreds of dollars, other than that it is straight forward.   I am being somewhat ambiguous on purpose to make this have a little more business feeling.  Explain and demonstrate your process, techniques used and not used, and your actual forecast.  I am giving you data via an excel file, please provide your written report on your findings, visuals, discussion and your R code via an RPubs link along with the actual.rmd file  Also please submit the forecast which you will put in an Excel readable file.
+
+**Part B – Forecasting Power, ResidentialCustomerForecastLoad-624.xlsx**
+
+Part B consists of a simple dataset of residential power usage for January 1998 until December 2013.  Your assignment is to model these data and a monthly forecast for 2014.  The data is given in a single file.  The variable ‘KWH’ is power consumption in Kilowatt hours, the rest is straight forward.    Add this to your existing files above. 
+
+**Part C – BONUS, optional (part or all), Waterflow_Pipe1.xlsx and Waterflow_Pipe2.xlsx**
+
+Part C consists of two data sets.  These are simple 2 columns sets, however they have different time stamps.  Your optional assignment is to time-base sequence the data and aggregate based on hour (example of what this looks like, follows).  Note for multiple recordings within an hour, take the mean.  Then to determine if the data is stationary and can it be forecast.  If so, provide a week forward forecast and present results via Rpubs and .rmd and the forecast in an Excel readable file. 
+
+# Part A: ATM Forecast
+
+## Load and Clean Data
+
+To ensure reproducibility, I converted the excel file into a CSV file and then 
+uploaded to GitHub.
+
+```{r}
+atm_raw <- "https://raw.githubusercontent.com/JDO-MSDS/Data-624/refs/heads/main/Project%201/data/ATM624Data%20-%20ATM%20Data.csv"
+
+atm <- read.csv(atm_raw)
+
+glimpse(atm)
+summary(atm)
+```
+
+```{r}
+# fix date format since it was num
+atm$DATE <- as.Date(atm$DATE, origin = "1899-12-30")
+
+head(atm)
+# checking how many different ATM
+unique(atm$ATM)
+```
+
+
+```{r}
+# removing the blank/missing ATM
+atm <- atm |>
+  filter(ATM != "")
+
+unique(atm$ATM)
+```
+
+```{r}
+# number of observations per ATM
+atm |> count(ATM)
+
+# split by atm
+atm_list <- split(atm, atm$ATM)
+
+# clean and sort
+atm_list <- lapply(atm_list, function(df) {
+  df |>
+    filter(!is.na(Cash)) |>
+    arrange(DATE)
+})
+
+# convert to time series
+atm_ts <- lapply(atm_list, function(df) {
+  ts_data <- ts(df$Cash, frequency = 7)
+  na.interp(ts_data)
+})
+```
+## ATM Plots
+
+```{r}
+par(mfrow = c(2,2)) 
+
+for(name in names(atm_ts)) {
+  plot(atm_ts[[name]],
+       main = paste("Cash Withdrawals -", name),
+       ylab = "Cash",
+       xlab = "Time",
+       col = "red")
+}
+
+par(mfrow = c(2,2))
+
+for(name in names(atm_ts)) {
+  acf(atm_ts[[name]],
+      main = paste("ACF -", name))
+}
+
+par(mfrow = c(2,2))
+
+for(name in names(atm_ts)) {
+  pacf(atm_ts[[name]],
+       main = paste("PACF -", name))
+}
+```
+
+
+By looking at the plots, I can see that ATM1 and ATM2 show stable patterns over 
+time, with somewhat regular ups and downs. The ACF plots suggest a repeating pattern
+around every 7 days, which makes sense as a weekly pattern. The PACF plots also 
+has some structure in the early lags, so it should be predictable. The weekly seasonality
+and structured autocorrelation make ARIMA and ETS good model options. ATM3 is quite
+different. Basically the only activity is near the end. This probably means that
+this ATM was only installed by the end of the period. I will use a simple 
+average-based approach due to the lack of data. ATM4 has a few extreme spikes. It
+also has fluctuations. It is not easy to identify clear patterns, which can be
+confirmed in the ACF and PACF plots that look more scattered. So, I will treat 
+each ATM separately since they each show different behaviors. In the following 
+section, I will implement these models and compare their forecasting performance.
+
+
+## ATM1 Forecast
+
+### Fit ARIMA model for ATM1
+
+As explained above, the plot for ATM1 showed a weekly pattern, so I will use
+`auto.arima()` to select the best model based on the data since seasonality makes
+sense.
+
+```{r}
+atm1_arima <- auto.arima(atm_ts$ATM1, seasonal = TRUE)
+summary(atm1_arima)
+```
+The model selected by `auto.arima()` is ARIMA(0,0,1)(0,1,1)[7]. The weekly seasonality
+is confirmed.
+
+### Check ARIMA diagnosis for ATM1
+
+```{r}
+checkresiduals(atm1_arima)
+```
+
+The residuals from the ARIMA(0,0,1)(0,1,1)[7] model fluctuate around zero with 
+no obvious pattern, so that means that the model has captured the main structure
+of the data. The ACF plot shows that correlations are within the confidence
+limits, so no autocorrelation left. The Ljung-Box test produced a p-value of 0.5062,
+so we fail to reject the null hypothesis of no autocorrelation. The residuals 
+behave like white noise, telling us the model is a good fit.
+
+
+### Fit ETS for ATM1
+
+```{r}
+atm1_ets <- ets(atm_ts$ATM1)
+summary(atm1_ets)
+```
+The model shows a very small smoothing parameter for the level and some seasonal
+adjustment, indicating that most of the variation comes from the weekly patterns.
+The error measures (RMSE around 26.05, MAE 16.96) suggest a reasonable fit to the data.
+
+
+### Check ETS diagnosis for ATM1
+
+```{r}
+checkresiduals(atm1_ets)
+```
+
+The residuals from the ETS(A,N,A) model fluctuate around zero with no obvious 
+pattern, meaning we have a reasonable fit. The ACF plot shows that most correlations
+lie within the confidence limits, so very little remaining autocorrelation. The 
+Ljung-Box test gave a p-value of 0.2206, so we fail to reject the null hypothesis
+of no autocorrelation. Once again, the residuals behave close to white noise, 
+meaning the model is appropriate.
+
+Since both models make sense, I will forecast with both ARIMA and ETS.
+
+
+### Forecast ATM1 with both models
+
+Forecast the next 31 days (end of May)
+
+```{r}
+atm1_arima_fc <- forecast(atm1_arima, h = 31)
+atm1_ets_fc   <- forecast(atm1_ets, h = 31)
+
+# plots
+plot(atm1_arima_fc, main = "ATM1 ARIMA Forecast")
+plot(atm1_ets_fc, main = "ATM1 ETS Forecast")
+```
+
+## ATM2 Forecast
+
+### Fit ARIMA model for ATM2
+
+
+```{r}
+atm2_arima <- auto.arima(atm_ts$ATM2, seasonal = TRUE)
+summary(atm2_arima)
+```
+The model select by `auto.arima()` for ATM2 is ARIMA(2,0,2)(0,1,2)[7] 
+
+
+### Check ARIMA diagnosis for ATM2
+
+```{r}
+checkresiduals(atm2_arima)
+```
+
+The residuals from the ARIMA(2,0,2)(0,1,2)[7] model fluctuate around zero with 
+no obvious pattern, so that means that the model has captured the main structure
+of the data. The ACF plot shows that most correlations are within the confidence
+limits, so barely any autocorrelation left. The Ljung-Box test produced a p-value 
+of 0.1459, so we fail to reject the null hypothesis of no autocorrelation. The 
+residuals behave like white noise, telling us the model is a good fit.
+
+### Fit ETS for ATM2
+
+```{r}
+atm2_ets <- ets(atm_ts$ATM2)
+summary(atm2_ets)
+```
+
+### Check ETS diagnosis for ATM2
+
+```{r}
+checkresiduals(atm2_ets)
+```
+We can see that residuals fluctuate around zero and most without a pattern, so
+decent fit. The ACF has 3 correlations outside the limits, however, most correlations
+are within limits. The Ljung-Box test gave a p-value of 0.0004379, so we fail to
+reject the null hypothesis of no autocorrelation.
+
+
+### Forecast ATM2 with both models
+
+```{r}
+atm2_arima_fc <- forecast(atm2_arima, h = 31)
+atm2_ets_fc   <- forecast(atm2_ets, h = 31)
+
+plot(atm2_arima_fc, main = "ATM2 ARIMA Forecast")
+plot(atm2_ets_fc, main = "ATM2 ETS Forecast")
+```
+## Accuracy Testing
+Since both models seem to be appropriate for both ATM1 and ATM2, I will compare
+the accuracy on a test set using the 7 last observations as my test data.
+
+### Split data into train and test set
+
+ATM1
+
+```{r}
+atm1_train <- head(atm_ts$ATM1, length(atm_ts$ATM1) - 7)
+atm1_test  <- tail(atm_ts$ATM1, 7)
+```
+
+ATM2
+
+```{r}
+atm2_train <- head(atm_ts$ATM2, length(atm_ts$ATM2) - 7)
+atm2_test  <- tail(atm_ts$ATM2, 7)
+
+```
+
+
+### Fit models again on training data
+
+ATM1
+
+```{r}
+atm1_arima_train <- auto.arima(atm1_train, seasonal = TRUE)
+atm1_ets_train   <- ets(atm1_train)
+
+atm1_arima_pred <- forecast(atm1_arima_train, h = 31)
+atm1_ets_pred   <- forecast(atm1_ets_train, h = 31)
+```
+
+ATM2
+
+```{r}
+atm2_arima_train <- auto.arima(atm2_train, seasonal = TRUE)
+atm2_ets_train   <- ets(atm2_train)
+
+atm2_arima_pred <- forecast(atm2_arima_train, h = 31)
+atm2_ets_pred   <- forecast(atm2_ets_train, h = 31)
+```
+
+
+### Forecast 
+
+ATM1
+
+```{r}
+accuracy(atm1_arima_pred, atm1_test)
+accuracy(atm1_ets_pred, atm1_test)
+```
+
+ATM2
+
+```{r}
+accuracy(atm2_arima_pred, atm2_test)
+accuracy(atm2_ets_pred, atm2_test)
+```
+
+By analyzing the accuracy measures, we can see that for ATM1, both models 
+performed similarly, but there are some differences since ARIMA had a slightly 
+lower RMSE (6.51 vs 6.54) and ETS had slightly better MAE and MAPE. The performance
+is very close, but I think ETS provides a marginally better fit because of its 
+slightly lower error in MAE and MAPE.
+
+For ATM2, it's a little different since ETS outperforms ARIMA across all key metrics.
+The RMSE is lower (17.34 vs 20.59), the MAE is lower (12.93 vs 15.32), and 
+MAPE is significantly lower (20.44 vs 98.63). So, for ATM2, the ETS is better suited,
+probably because it handles variability and noise more effectively than ARIMA in
+this case.
+
+So, I selected ETS for both, although both models performed similarly for ATM1.
+
+
+## ATM3 Forecast
+
+As explained above, ATM3 is kind of a unique case, as the time series is mainly 
+zeros with only a few observations by the end of the period. This probably means
+that the ATM was inactive for most of the time frame. Because of this, standard 
+time series models like ARIMA or ETS don't make sense since they rely on consistent
+patterns to generate forecasts. I will instead use an average-based forecast.
+I could have also excluded ATM3 because of the lack of data but I decided to do
+it in case a full ATM analysis is preferred. 
+
+
+```{r}
+atm3_mean <- meanf(atm_ts$ATM3, h = 31)
+plot(atm3_mean, main = "ATM3 Mean Forecast")
+```
+
+The forecast is pretty close to zero since the great majority of the values are
+zero.
+
+## ATM4 Forecast
+
+
+As explained above, ATM4 has high variability and extreme spikes, telling us we 
+have outliers and unstable variance, which can negatively impact standard time 
+series models such as ARIMA and ETS. So, in this case, I will perform a log 
+transformation to stabilize the variance and reduce the influence of outliers, to
+allow the models to properly capture the actual structure of the data. After the log
+transformation, I will use ARIMA and ETS and then use exponential to rever to the
+original scale.
+
+
+### Log Transform ATM4
+
+```{r}
+atm4_log <- log(atm_ts$ATM4 + 1)
+plot(atm4_log, main = "ATM4 Log-Transformed")
+```
+The log transformation clearly reduced the impact of extremes (spikes).
+
+
+### Fit ARIMA and ETS models in transformed data
+
+ARIMA
+
+```{r}
+atm4_arima <- auto.arima(atm4_log, seasonal = TRUE)
+summary(atm4_arima)
+# residuals
+checkresiduals(atm4_arima)
+```
+
+ETS
+
+```{r}
+atm4_ets <- ets(atm4_log)
+summary(atm4_ets)
+
+#residuals
+checkresiduals(atm4_ets)
+```
+
+
+### Forecast
+
+```{r}
+atm4_arima_fc <- forecast(atm4_arima, h = 31)
+atm4_ets_fc   <- forecast(atm4_ets, h = 31)
+```
+
+
+Convert back using exponential function
+
+```{r}
+atm4_arima_fc$mean  <- exp(atm4_arima_fc$mean) - 1
+atm4_arima_fc$lower <- exp(atm4_arima_fc$lower) - 1
+atm4_arima_fc$upper <- exp(atm4_arima_fc$upper) - 1
+atm4_ets_fc$mean   <- exp(atm4_ets_fc$mean) - 1
+atm4_ets_fc$lower <- exp(atm4_ets_fc$lower) - 1
+atm4_ets_fc$upper <- exp(atm4_ets_fc$upper) - 1
+```
+
+
+### Plot
+
+```{r}
+plot(atm4_arima_fc, main = "ATM4 ARIMA Forecast")
+plot(atm4_ets_fc, main = "ATM4 ETS Forecast")
+```
+
+I tried to forecast using manually transformed data (log transformation) but it 
+produced inconsistent visualizations due to scaling issues. Instead, a log transformation
+was applied directly within the functions, to make sure the forecasts could be 
+properly interpreted in the original scale.
+
+### Fit Models
+ 
+```{r}
+atm4_arima <- auto.arima(atm_ts$ATM4, lambda = 0)
+atm4_ets   <- ets(atm_ts$ATM4, lambda = 0)
+```
+
+### Forecast
+
+```{r}
+atm4_arima_fc <- forecast(atm4_arima, h = 31)
+atm4_ets_fc   <- forecast(atm4_ets, h = 31)
+```
+
+### Plots
+
+```{r}
+plot(atm4_arima_fc, main = "ATM4 ARIMA Forecast")
+plot(atm4_ets_fc, main = "ATM4 ETS Forecast")
+
+```
+The plots for both ARIMA and ETS have very wide uncertainty intervals.
+
+
+## Accuracy Test ATM4
+
+I will perform accuracy outputs tests just like I did for ATM1 and ATM2.
+
+### Split train and test sets
+
+
+```{r}
+atm4_train <- head(atm_ts$ATM4, length(atm_ts$ATM4) - 7)
+atm4_test  <- tail(atm_ts$ATM4, 7)
+```
+
+
+### Fit models again on training data
+
+```{r}
+atm4_arima_train <- auto.arima(atm4_train, lambda = 0)
+atm4_ets_train   <- ets(atm4_train, lambda = 0)
+```
+
+
+### Forecast
+
+```{r}
+atm4_arima_pred <- forecast(atm4_arima_train, h = 31)
+atm4_ets_pred   <- forecast(atm4_ets_train, h = 31)
+```
+
+
+### Accuracy
+
+```{r}
+accuracy(atm4_arima_pred, atm4_test)
+accuracy(atm4_ets_pred, atm4_test)
+```
+
+For ATM4, the forecast accuracy is way worse compared to the other ATMs, which was
+expected because of the high variability in the data. Both ARIMA and ETS models 
+produce considerably large errors, with very high RMSE and MAPE values.
+
+Between the two models, ETS performs a little better, with lower RMSE (203 vs 213)
+and MAE (155 vs 184), so it has more accurate predictions overall.
+
+It is important to note that a major factor impacting performance is the extreme
+spike in the data, which significantly increases variability and makes it difficult
+for both models to produce stable forecasts. This explaines the higher uncertainty
+and lower predictive accuracy.
+
+
+### Final Forecasts Table
+
+```{r}
+atm1_final <- forecast(atm1_ets, h = 31)
+atm2_final <- forecast(atm2_ets, h = 31)
+atm3_final <- meanf(atm_ts$ATM3, h = 31)
+atm4_final <- forecast(atm4_ets, h = 31)
+
+may_dates <- seq(as.Date("2010-05-01"), as.Date("2010-05-31"), by = "day")
+
+forecast_df <- data.frame(
+  DATE = may_dates,
+  ATM1 = as.numeric(atm1_final$mean),
+  ATM2 = as.numeric(atm2_final$mean),
+  ATM3 = as.numeric(atm3_final$mean),
+  ATM4 = as.numeric(atm4_final$mean)
+)
+```
+
+Export to Excel
+
+```{r}
+write_xlsx(forecast_df, "ATM_May_2010_Forecast.xlsx")
+```
+
+
+
+
+## Part A Conclusion
+
+Since the four ATM datasets have different behaviors, I evaluated each individually.
+
+For ATM1 and ATM2, both ARIMA and ETS models performed pretty well, capturing 
+the underlying structure and weekly seasonality in the data. The performance for
+ARIMA was good but ETS provided a slightly better fit overall and outperformed 
+ARIMA for ATM2 based on forecast accuracy.
+
+ATM3 contained mostly zero values with small activity toward the end of the time
+period. Due to the lack of meaningful (or any) historical patterns, I used a simple 
+average-based forecast.
+
+ATM4 has high variability and extreme outliers, making forecasting more difficult.
+I applied a log transformation to stabilize the variance, but both ARIMA and ETS
+models have reduced accuracy. Among the two, ETS performed slightly better, although
+results need to be interpreted with caution.
+
+
+# Part B: Forecasting Power
+
+## Load Data
+
+```{r}
+power_raw <- "https://raw.githubusercontent.com/JDO-MSDS/Data-624/refs/heads/main/Project%201/data/ResidentialCustomerForecastLoad-624%20-%20ResidentialCustomerForecastLoad.csv"
+
+power <- read.csv(power_raw)
+
+str(power)
+head(power)
+```
+
+The dataset consists of monthly residential power consumption from January 1998 
+to December 2013. I will convert the data into a time series object with a 
+frequency of 12 to reflect monthly observations and capture yearly seasonality.
+
+### Convert to time series
+
+```{r}
+power_ts <- ts(power$KWH, start = c(1998, 1), frequency = 12)
+
+# plot
+plot(power_ts, main = "Monthly Power Consumption", ylab = "KWH")
+
+# clean
+power_ts_clean <- na.interp(power_ts)
+
+power_ts <- power_ts_clean
+```
+
+The plot shows a repeating seasonal pattern, with yearly clear peaks and dips. So,
+we can say that residential electricity use is highly seasonal. Most of the series
+stays within a fairly consistent range, despite some increase in variability towards
+the end of the time period. There is a sharp drop right after 2010.
+
+
+### Decomposition
+
+```{r}
+power_decomp <- decompose(power_ts)
+plot(power_decomp)
+```
+
+I used decomposition to separate the series into trend, seasonal, and irregular 
+components. The seasonal component has a consistent yearly pattern, confirming 
+strong seasonality. The trend component indicates gradual changes in power 
+consumption over time.
+
+
+### ACF and PACF
+
+```{r}
+par(mfrow = c(1,2))
+
+acf(power_ts, main = "ACF - Power")
+pacf(power_ts, main = "PACF - Power")
+```
+
+The ACF plot shows strong and repeating spikes at regular intervals, particularly
+around lag 1.0 years (12 months), so obvious yearly seasonality in the data. The
+slow decay in autocorrelation suggests the presence of a trend.
+
+The PACF plot has significant spikes at the first few lags, then a gradual decline,
+indicating that autoregressive terms probably be useful in modeling the series.
+
+
+### Train and test split sets
+
+```{r}
+train <- window(power_ts, end = c(2012, 12))
+test  <- window(power_ts, start = c(2013, 1))
+```
+
+
+### Models
+
+**ARIMA**
+
+```{r}
+power_arima <- auto.arima(train, seasonal = TRUE)
+summary(power_arima)
+checkresiduals(power_arima)
+```
+
+`auto.arima()` selected ARIMA(1,0,1)(2,1,0)[12] model with drift. The inclusion 
+of seasonal terms reflects the strong yearly seasonality mentioned above.
+
+The residual diagnostics indicate a good model fit. The Ljung-Box test produced 
+a p-value of 0.9652, so no significant autocorrelation remains in the 
+residuals. The model successfully captures the temporal structure of the data.
+
+**ETS**
+
+```{r}
+power_ets <- ets(train)
+summary(power_ets)
+checkresiduals(power_ets)
+```
+The selected ETS model is ETS(M,N,M), which captures multiplicative seasonality 
+without a trend. The model reflects the strong seasonal variation mentioned above.
+
+Residual diagnostics show that the model gives an adequate fit, with a Ljung-Box
+test p-value of 0.305. This means that the residuals behave close to white noise,
+despite the fit is less strong compared to the ARIMA model.
+
+
+### Forecast
+
+```{r}
+arima_fc <- forecast(power_arima, h = 12)
+ets_fc   <- forecast(power_ets, h = 12)
+```
+
+
+### Accuracy
+
+```{r}
+accuracy(arima_fc, test)
+accuracy(ets_fc, test)
+```
+
+
+I compared the forecasts using a 12 month test set (2013) to evaluate which one
+is the best model. Both models capture the general seasonal pattern, but there are
+differences in accuracy. The ETS model outperforms ARIMA across all key metrics 
+on the test set since RMSE, MAE, and MAPE are lower.
+
+So, despite the ARIMA model showed great residual diagnostics, the forecast accuracy
+is noticeably worse than ETS. So, ETS is a better choice to capture the multiplicative
+seasonal structure of the data.
+
+Therefore, I selected ETS(M,N,M).
+
+
+### 2014 Forecast
+
+```{r}
+final_forecast <- forecast(power_ets, h = 12)
+plot(final_forecast)
+
+# export to excel
+forecast_2014 <- data.frame(
+  Month = seq(as.Date("2014-01-01"), as.Date("2014-12-01"), by = "month"),
+  Forecast = as.numeric(final_forecast$mean)
+)
+
+write_xlsx(forecast_2014, "Power_2014_Forecast.xlsx")
+```
+
+## Part B Conclucsion
+
+The power consumption data set has strong yearly seasonality, which was effectively
+captured by both ARIMA and ETS models. The ARIMA provided a good statistical fit
+based on the residual diagnostics, however, ETS ended up having a superior forecasting
+performance on the test set. Because of this, I selected ETS as the final model for predicting power consumption in 2014.
+
+
+# Part C: Waterflow 
+
+## Load Data
+
+```{r}
+pipe1_raw <- "https://raw.githubusercontent.com/JDO-MSDS/Data-624/refs/heads/main/Project%201/data/Waterflow_Pipe1%20-%20Waterflow_Pipe1.csv"
+pipe1 <- read.csv(pipe1_raw)
+
+
+pipe2_raw <- "https://raw.githubusercontent.com/JDO-MSDS/Data-624/refs/heads/main/Project%201/data/Waterflow_Pipe2%20-%20Waterflow_Pipe2.csv"
+pipe2 <- read.csv(pipe2_raw)
+
+str(pipe1)
+head(pipe1)
+
+str(pipe2)
+head(pipe2)
+```
+
+
+## Convert datetime
+
+
+```{r}
+pipe1 <- pipe1 |>
+  mutate(
+    Date.Time = as.POSIXct(Date.Time * 86400, origin = "1899-12-30", tz = "UTC"),
+    hour = as.POSIXct(format(Date.Time, "%Y-%m-%d %H:00:00"), tz = "UTC")
+  )
+
+pipe2 <- pipe2 |>
+  mutate(
+    Date.Time = as.POSIXct(Date.Time * 86400, origin = "1899-12-30", tz = "UTC"),
+    hour = as.POSIXct(format(Date.Time, "%Y-%m-%d %H:00:00"), tz = "UTC")
+  )
+```
+
+
+## Aggregate
+
+Using the mean as suggested 
+
+```{r}
+pipe1_hourly <- pipe1 |>
+  group_by(hour) |>
+  summarise(WaterFlow = mean(WaterFlow, na.rm = TRUE))
+
+pipe2_hourly <- pipe2 |>
+  group_by(hour) |>
+  summarise(WaterFlow = mean(WaterFlow, na.rm = TRUE))
+```
+
+
+## Plot
+
+```{r}
+plot(pipe1_hourly$hour, pipe1_hourly$WaterFlow,
+     type = "l", main = "Pipe 1 Hourly Flow")
+
+plot(pipe2_hourly$hour, pipe2_hourly$WaterFlow,
+     type = "l", main = "Pipe 2 Hourly Flow")
+```
+
+
+The water flow data sets have timestamped observations recorded at irregular 
+intervals. I converted the timestamp from Excel numeric format to standard datetime
+format. To align the data, I aggregated the observations hourly. For hours with 
+various readings, I used the average water flow. 
+
+## Convert to a time series with 24 hours
+
+```{r}
+pipe1_ts <- ts(pipe1_hourly$WaterFlow, frequency = 24)
+pipe2_ts <- ts(pipe2_hourly$WaterFlow, frequency = 24)
+```
+
+
+## Plot and ACF for both pipes time series
+
+```{r}
+plot(pipe1_ts, main = "Pipe 1 Time Series")
+acf(pipe1_ts)
+
+plot(pipe2_ts, main = "Pipe 2 Time Series")
+acf(pipe2_ts)
+```
+
+The hourly series for both pipes 1 and 2 seem to fluctuate around a relatively 
+constant level with no obvious long-term trend. The variability is fairly stable
+over time. The ACF plots show that most autocorrelation values are within the 
+confidence bounds after the first lag. So, both series behave close to white noise.
+They are kind of stationary but they do not have strong patterns/structure, so
+forecasting doesn't make much sense. 
