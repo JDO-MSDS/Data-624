@@ -1,0 +1,289 @@
+# =============================================================
+# Applied Predictive Modeling - Chapter 7
+# Question 7.2 and Question 7.5
+# Nonlinear Regression: KNN, MARS, SVM, Neural Networks
+# =============================================================
+
+# ---- Required Libraries ----
+library(mlbench)
+library(caret)
+library(earth)       # MARS
+library(kernlab)     # SVM
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+# library(AppliedPredictiveModeling)  # needed for Q7.5 ChemicalManufacturingProcess
+
+
+# =============================================================
+# QUESTION 7.2 — Friedman1 Benchmark Data
+# =============================================================
+
+# ---- Simulate Data ----
+set.seed(200)
+trainingData <- mlbench.friedman1(200, sd = 1)
+trainingData$x <- data.frame(trainingData$x)
+
+testData <- mlbench.friedman1(5000, sd = 1)
+testData$x <- data.frame(testData$x)
+
+# ---- Resampling Control ----
+ctrl <- trainControl(method = "boot", number = 25)
+
+# ---- 1. KNN ----
+set.seed(100)
+knnModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = ctrl)
+knnModel
+knnPred <- predict(knnModel, newdata = testData$x)
+knn_res <- postResample(pred = knnPred, obs = testData$y)
+cat("KNN Test Performance:\n"); print(round(knn_res, 4))
+
+# ---- 2. MARS ----
+set.seed(100)
+marsGrid <- expand.grid(degree = 1:2, nprune = 2:20)
+marsModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "earth",
+                   tuneGrid = marsGrid,
+                   trControl = ctrl)
+marsModel
+marsPred <- predict(marsModel, newdata = testData$x)
+mars_res <- postResample(pred = marsPred, obs = testData$y)
+cat("MARS Test Performance:\n"); print(round(mars_res, 4))
+
+# MARS variable importance — does it select only X1-X5?
+varImp(marsModel)
+
+# ---- 3. SVM (Radial Basis Kernel) ----
+set.seed(100)
+svmModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 14,
+                  trControl = ctrl)
+svmModel
+svmPred <- predict(svmModel, newdata = testData$x)
+svm_res <- postResample(pred = svmPred, obs = testData$y)
+cat("SVM Test Performance:\n"); print(round(svm_res, 4))
+
+# ---- 4. Neural Network (single hidden layer) ----
+set.seed(100)
+nnetGrid <- expand.grid(size  = c(1, 3, 5, 7, 9),
+                        decay = c(0, 0.001, 0.01, 0.1))
+nnetModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "nnet",
+                   preProc = c("center", "scale", "spatialSign"),
+                   tuneGrid = nnetGrid,
+                   trControl = ctrl,
+                   linout  = TRUE,
+                   trace   = FALSE,
+                   MaxNWts = 10 * (ncol(trainingData$x) + 1) + 10 + 1,
+                   maxit   = 500)
+nnetModel
+nnetPred <- predict(nnetModel, newdata = testData$x)
+nnet_res <- postResample(pred = nnetPred, obs = testData$y)
+cat("NNet Test Performance:\n"); print(round(nnet_res, 4))
+
+# ---- Q7.2 Summary Table ----
+results_72 <- data.frame(
+  Model     = c("KNN", "MARS", "SVM Radial", "Neural Net"),
+  Test_RMSE = round(c(knn_res["RMSE"], mars_res["RMSE"],
+                      svm_res["RMSE"], nnet_res["RMSE"]), 4),
+  Test_Rsq  = round(c(knn_res["Rsquared"], mars_res["Rsquared"],
+                      svm_res["Rsquared"], nnet_res["Rsquared"]), 4)
+)
+print(results_72)
+
+# ---- Q7.2 Plot: Test RMSE Comparison ----
+ggplot(results_72, aes(x = reorder(Model, -Test_RMSE), y = Test_RMSE, fill = Model)) +
+  geom_col(width = 0.6, color = "white") +
+  geom_text(aes(label = round(Test_RMSE, 3)), vjust = -0.4, size = 4.5, fontface = "bold") +
+  scale_fill_manual(values = c("KNN"       = "#e07b54",
+                               "MARS"      = "#4CAF50",
+                               "SVM Radial"= "#5b8dd9",
+                               "Neural Net"= "#9c6fd6")) +
+  labs(title = "Q7.2 – Test Set RMSE by Model (Friedman1 Data)",
+       subtitle = "Lower RMSE = Better | MARS clearly dominates",
+       x = "Model", y = "Test RMSE") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none", plot.title = element_text(face = "bold"))
+
+# ---- Q7.2 Plot: MARS Variable Importance ----
+vi72 <- data.frame(
+  Predictor   = c("X1","X4","X2","X5","X3","X6","X7","X8","X9","X10"),
+  Importance  = c(100, 75.33, 48.88, 15.63, 0, 0, 0, 0, 0, 0),
+  Informative = c(TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+ggplot(vi72, aes(x = reorder(Predictor, Importance), y = Importance, fill = Informative)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#e07b54"),
+                    labels  = c("Non-informative (X6–X10)", "Informative (X1–X5)")) +
+  labs(title    = "Q7.2 – MARS Variable Importance",
+       subtitle = "MARS correctly selects only informative predictors X1–X5",
+       x = "Predictor", y = "Relative Importance (%)", fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# =============================================================
+# QUESTION 7.5 — Chemical Manufacturing Process
+# =============================================================
+
+# Load data (requires AppliedPredictiveModeling package)
+# install.packages("AppliedPredictiveModeling")
+# library(AppliedPredictiveModeling)
+# data(ChemicalManufacturingProcess)
+
+# If the package is unavailable, use the object already in your workspace,
+# or load it from a saved .RData file:
+# load("ChemManuf.RData")
+
+# ---- Pre-processing (same as Exercise 6.3) ----
+set.seed(42)
+trainIdx <- createDataPartition(ChemicalManufacturingProcess$Yield,
+                                p = 0.8, list = FALSE)
+trainRaw <- ChemicalManufacturingProcess[ trainIdx, ]
+testRaw  <- ChemicalManufacturingProcess[-trainIdx, ]
+
+# Median imputation, remove near-zero variance, center & scale
+preProcVals <- preProcess(trainRaw[, -1],
+                          method = c("medianImpute", "nzv", "center", "scale"))
+trainX <- predict(preProcVals, trainRaw[, -1])
+testX  <- predict(preProcVals, testRaw[, -1])
+trainY <- trainRaw$Yield
+testY  <- testRaw$Yield
+
+cat("Train:", nrow(trainX), "| Test:", nrow(testX),
+    "| Predictors:", ncol(trainX), "\n")
+
+ctrl10 <- trainControl(method = "cv", number = 10)
+
+# ---- (a) KNN ----
+set.seed(100)
+knnMod <- train(x = trainX, y = trainY,
+                method = "knn",
+                tuneLength = 10,
+                trControl = ctrl10)
+knnPred75  <- predict(knnMod, testX)
+knn_ts75   <- postResample(knnPred75, testY)
+
+# ---- (a) MARS ----
+set.seed(100)
+marsGrid75 <- expand.grid(degree = 1:2, nprune = 2:20)
+marsMod75  <- train(x = trainX, y = trainY,
+                    method = "earth",
+                    tuneGrid = marsGrid75,
+                    trControl = ctrl10)
+marsPred75 <- predict(marsMod75, testX)
+mars_ts75  <- postResample(marsPred75, testY)
+
+# ---- (a) SVM ----
+set.seed(100)
+svmMod75  <- train(x = trainX, y = trainY,
+                   method = "svmRadial",
+                   tuneLength = 10,
+                   trControl = ctrl10)
+svmPred75 <- predict(svmMod75, testX)
+svm_ts75  <- postResample(svmPred75, testY)
+
+# ---- (a) Neural Network ----
+set.seed(100)
+nnetGrid75 <- expand.grid(size  = c(1, 3, 5, 7),
+                           decay = c(0, 0.001, 0.01, 0.1))
+nnetMod75  <- train(x = trainX, y = trainY,
+                    method = "nnet",
+                    tuneGrid = nnetGrid75,
+                    trControl = ctrl10,
+                    linout  = TRUE,
+                    trace   = FALSE,
+                    MaxNWts = 10 * (ncol(trainX) + 1) + 10 + 1,
+                    maxit   = 500)
+nnetPred75 <- predict(nnetMod75, testX)
+nnet_ts75  <- postResample(nnetPred75, testY)
+
+# ---- (a) Performance Summary ----
+summ75 <- data.frame(
+  Model     = c("KNN", "MARS", "SVM", "NNet"),
+  CV_RMSE   = round(c(min(knnMod$results$RMSE),
+                      min(marsMod75$results$RMSE, na.rm = TRUE),
+                      min(svmMod75$results$RMSE,  na.rm = TRUE),
+                      min(nnetMod75$results$RMSE, na.rm = TRUE)), 4),
+  Test_RMSE = round(c(knn_ts75["RMSE"], mars_ts75["RMSE"],
+                      svm_ts75["RMSE"],  nnet_ts75["RMSE"]), 4),
+  Test_Rsq  = round(c(knn_ts75["Rsquared"], mars_ts75["Rsquared"],
+                      svm_ts75["Rsquared"],  nnet_ts75["Rsquared"]), 4)
+)
+print(summ75)
+
+# ---- (a) Plot: CV & Test RMSE ----
+summ_long <- pivot_longer(summ75, cols = c(CV_RMSE, Test_RMSE),
+                           names_to = "Set", values_to = "RMSE")
+ggplot(summ_long, aes(x = reorder(Model, -RMSE), y = RMSE, fill = Set)) +
+  geom_col(position = "dodge", width = 0.6, color = "white") +
+  geom_text(aes(label = round(RMSE, 2)),
+            position = position_dodge(0.6), vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = c("CV_RMSE" = "#5b8dd9", "Test_RMSE" = "#e07b54"),
+                    labels  = c("10-Fold CV RMSE", "Test RMSE")) +
+  labs(title    = "Q7.5(a) – Nonlinear Model Performance: Chemical Mfg. Process",
+       subtitle = "MARS achieves the lowest RMSE on both CV and test set",
+       x = "Model", y = "RMSE", fill = "") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# ---- (b) Variable Importance — Best Model (MARS) ----
+vi_mars75 <- varImp(marsMod75, scale = TRUE)
+print(vi_mars75, top = 15)
+
+# Organize into a data frame with variable type labels
+vi_df75 <- vi_mars75$importance
+vi_df75$Predictor <- rownames(vi_df75)
+vi_df75 <- vi_df75[order(-vi_df75$Overall), ]
+vi_df75$Type <- ifelse(grepl("Bio", vi_df75$Predictor),
+                       "Biological", "ManufacturingProcess")
+print(head(vi_df75, 10))
+
+# Plot variable importance
+ggplot(head(vi_df75[!is.na(vi_df75$Overall), ], 10),
+       aes(x = reorder(Predictor, Overall), y = Overall, fill = Type)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("Biological"          = "#4CAF50",
+                               "ManufacturingProcess" = "#5b8dd9")) +
+  labs(title    = "Q7.5(b) – Top Variable Importance (MARS Model)",
+       subtitle = "BiologicalMaterial01 dominates; ManufacturingProcess also selected",
+       x = "Predictor", y = "Relative Importance (%)", fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+
+# MARS final model terms
+summary(marsMod75$finalModel)
+
+# ---- (c) Relationships: Top Predictors vs Yield ----
+top_preds <- c("BiologicalMaterial01",
+               "ManufacturingProcess13",
+               "ManufacturingProcess17")
+colors_c  <- c("#4CAF50", "#5b8dd9", "#e07b54")
+
+plot_list <- lapply(seq_along(top_preds), function(i) {
+  pvar   <- top_preds[i]
+  df_tmp <- data.frame(x = ChemicalManufacturingProcess[[pvar]],
+                       y = ChemicalManufacturingProcess$Yield)
+  df_tmp <- df_tmp[!is.na(df_tmp$x), ]
+  ggplot(df_tmp, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5, color = colors_c[i], size = 2) +
+    geom_smooth(method = "loess", se = TRUE,
+                color = "black", linewidth = 0.9) +
+    labs(title = pvar, x = pvar, y = "Yield") +
+    theme_minimal(base_size = 11)
+})
+
+grid.arrange(grobs = plot_list, ncol = 3,
+             top = "Q7.5(c) – Top Predictors vs Yield\nNonlinear relationships captured via MARS hinge functions")

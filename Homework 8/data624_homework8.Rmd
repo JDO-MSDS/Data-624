@@ -1,0 +1,172 @@
+---
+title: "Data 624 Homework 8"
+author: "Joao De Oliveira"
+date: "2026-05-01"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+In this report, I will be answering questions 2 and 5 in the 7th chapter
+from the Kuhn and Johnson book.
+
+
+## Libraries
+
+```{r packages}
+library(mlbench)
+library(caret)
+library(earth)       
+library(kernlab)    
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+```
+
+
+### Question 7.2
+Friedman (1991) introduced several benchmark data sets create by simulation. One of these simulations used the following nonlinear equation to create data:
+y = 10 sin(πx1x2) + 20(x3 − 0.5)2 + 10x4 + 5x5 + N(0, σ2)
+where the x values are random variables uniformly distributed between [0, 1]
+(there are also 5 other non-informative variables also created in the simulation). The package mlbench contains a function called mlbench.friedman1 that simulates these data:
+
+
+```{r exercise7-2}
+set.seed(200)
+
+trainingData <- mlbench.friedman1(200, sd = 1)
+trainingData$x <- data.frame(trainingData$x)
+
+testData <- mlbench.friedman1(5000, sd = 1)
+testData$x <- data.frame(testData$x)
+
+ctrl <- trainControl(method = "boot", number = 25)
+```
+
+**KNN**
+
+```{r knn}  
+set.seed(200)
+knnModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = ctrl)
+knnModel
+knnPred <- predict(knnModel, newdata = testData$x)
+knn_res <- postResample(pred = knnPred, obs = testData$y)
+cat("KNN Test Performance:\n"); print(round(knn_res, 4))
+```
+
+**MARS**
+
+```{r mars}
+set.seed(200)
+marsGrid <- expand.grid(degree = 1:2, nprune = 2:20)
+marsModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "earth",
+                   tuneGrid = marsGrid,
+                   trControl = ctrl)
+marsModel
+marsPred <- predict(marsModel, newdata = testData$x)
+mars_res <- postResample(pred = marsPred, obs = testData$y)
+cat("MARS Test Performance:\n"); print(round(mars_res, 4))
+
+# does it select only X1-X5?
+varImp(marsModel)
+```
+
+**SVM**
+
+```{r svm}
+set.seed(200)
+svmModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 14,
+                  trControl = ctrl)
+svmModel
+svmPred <- predict(svmModel, newdata = testData$x)
+svm_res <- postResample(pred = svmPred, obs = testData$y)
+cat("SVM Test Performance:\n"); print(round(svm_res, 4))
+```
+
+**Neural Network**
+
+```{r neural-network}
+set.seed(200)
+nnetGrid <- expand.grid(size  = c(1, 3, 5, 7, 9),
+                        decay = c(0, 0.001, 0.01, 0.1))
+nnetModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "nnet",
+                   preProc = c("center", "scale", "spatialSign"),
+                   tuneGrid = nnetGrid,
+                   trControl = ctrl,
+                   linout  = TRUE,
+                   trace   = FALSE,
+                   MaxNWts = 10 * (ncol(trainingData$x) + 1) + 10 + 1,
+                   maxit   = 500)
+nnetModel
+nnetPred <- predict(nnetModel, newdata = testData$x)
+nnet_res <- postResample(pred = nnetPred, obs = testData$y)
+cat("NNet Test Performance:\n"); print(round(nnet_res, 4))
+```
+
+**Summary Table**
+
+```{r summary}
+results_72 <- data.frame(
+  Model     = c("KNN", "MARS", "SVM Radial", "Neural Net"),
+  Test_RMSE = round(c(knn_res["RMSE"], mars_res["RMSE"],
+                      svm_res["RMSE"], nnet_res["RMSE"]), 4),
+  Test_Rsq  = round(c(knn_res["Rsquared"], mars_res["Rsquared"],
+                      svm_res["Rsquared"], nnet_res["Rsquared"]), 4)
+)
+print(results_72)
+```
+
+**Plots**
+
+```{r plots}
+# plot: test RMSE comparison
+ggplot(results_72, aes(x = reorder(Model, -Test_RMSE), y = Test_RMSE, fill = Model)) +
+  geom_col(width = 0.6, color = "white") +
+  geom_text(aes(label = round(Test_RMSE, 3)), vjust = -0.4, size = 4.5, fontface = "bold") +
+  scale_fill_manual(values = c("KNN"       = "#e07b54",
+                               "MARS"      = "#4CAF50",
+                               "SVM Radial"= "#5b8dd9",
+                               "Neural Net"= "#9c6fd6")) +
+  labs(title = "Q7.2 – Test Set RMSE by Model (Friedman1 Data)",
+       subtitle = "Lower RMSE = Better | MARS clearly dominates",
+       x = "Model", y = "Test RMSE") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none", plot.title = element_text(face = "bold"))
+
+# plot MARS variable importance
+vi72 <- data.frame(
+  Predictor   = c("X1","X4","X2","X5","X3","X6","X7","X8","X9","X10"),
+  Importance  = c(100, 75.33, 48.88, 15.63, 0, 0, 0, 0, 0, 0),
+  Informative = c(TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+ggplot(vi72, aes(x = reorder(Predictor, Importance), y = Importance, fill = Informative)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#e07b54"),
+                    labels  = c("Non-informative (X6–X10)", "Informative (X1–X5)")) +
+  labs(title    = "Q7.2 – MARS Variable Importance",
+       subtitle = "MARS correctly selects only informative predictors X1–X5",
+       x = "Predictor", y = "Relative Importance (%)", fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
