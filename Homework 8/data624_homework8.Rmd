@@ -1,0 +1,443 @@
+---
+title: "Data 624 Homework 8"
+author: "Joao De Oliveira"
+date: "2026-05-01"
+output: 
+  pdf_document:
+        latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE)
+```
+
+## Introduction
+In this report, I will be answering questions 2 and 5 in the 7th chapter
+from the Kuhn and Johnson book.
+
+
+## Libraries
+
+```{r packages}
+library(mlbench)
+library(caret)
+library(earth)       
+library(kernlab)    
+library(ggplot2)
+library(tidyr)
+library(gridExtra)
+library(AppliedPredictiveModeling)
+```
+
+
+### Question 7.2
+Friedman (1991) introduced several benchmark data sets create by simulation. One of these simulations used the following nonlinear equation to create data:
+$$y = 10 \sin(\pi x_1 x_2) + 20(x_3 - 0.5)^2 + 10x_4 + 5x_5 + \mathcal{N}(0,\sigma^2)$$
+where the x values are random variables uniformly distributed between [0, 1]
+(there are also 5 other non-informative variables also created in the simulation). The package mlbench contains a function called mlbench.friedman1 that simulates these data:
+
+
+```{r exercise7-2}
+set.seed(200)
+
+trainingData <- mlbench.friedman1(200, sd = 1)
+trainingData$x <- data.frame(trainingData$x)
+
+testData <- mlbench.friedman1(5000, sd = 1)
+testData$x <- data.frame(testData$x)
+
+ctrl <- trainControl(method = "boot", number = 25)
+```
+
+**KNN**
+
+```{r knn}  
+set.seed(100)
+knnModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "knn",
+                  preProc = c("center", "scale"),
+                  tuneLength = 10,
+                  trControl = ctrl)
+knnModel
+knnPred <- predict(knnModel, newdata = testData$x)
+knn_res <- postResample(pred = knnPred, obs = testData$y)
+cat("KNN Test Performance:\n"); print(round(knn_res, 4))
+```
+
+**MARS**
+
+```{r mars}
+set.seed(100)
+marsGrid <- expand.grid(degree = 1:2, nprune = 2:20)
+marsModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "earth",
+                   tuneGrid = marsGrid,
+                   trControl = ctrl)
+marsModel
+marsPred <- predict(marsModel, newdata = testData$x)
+mars_res <- postResample(pred = marsPred, obs = testData$y)
+cat("MARS Test Performance:\n"); print(round(mars_res, 4))
+
+# does it select only X1-X5?
+varImp(marsModel)
+```
+
+**SVM**
+
+```{r svm}
+set.seed(100)
+svmModel <- train(x = trainingData$x,
+                  y = trainingData$y,
+                  method = "svmRadial",
+                  preProc = c("center", "scale"),
+                  tuneLength = 14,
+                  trControl = ctrl)
+svmModel
+svmPred <- predict(svmModel, newdata = testData$x)
+svm_res <- postResample(pred = svmPred, obs = testData$y)
+cat("SVM Test Performance:\n"); print(round(svm_res, 4))
+```
+
+**Neural Network**
+
+```{r neural-network}
+set.seed(100)
+nnetGrid <- expand.grid(size  = c(1, 3, 5, 7, 9),
+                        decay = c(0, 0.001, 0.01, 0.1))
+nnetModel <- train(x = trainingData$x,
+                   y = trainingData$y,
+                   method = "nnet",
+                   preProc = c("center", "scale", "spatialSign"),
+                   tuneGrid = nnetGrid,
+                   trControl = ctrl,
+                   linout  = TRUE,
+                   trace   = FALSE,
+                   MaxNWts = 10 * (ncol(trainingData$x) + 1) + 10 + 1,
+                   maxit   = 500)
+nnetModel
+nnetPred <- predict(nnetModel, newdata = testData$x)
+nnet_res <- postResample(pred = nnetPred, obs = testData$y)
+cat("NNet Test Performance:\n"); print(round(nnet_res, 4))
+```
+
+**Summary Table**
+
+```{r summary}
+results_72 <- data.frame(
+  Model     = c("KNN", "MARS", "SVM Radial", "Neural Net"),
+  Test_RMSE = round(c(knn_res["RMSE"], mars_res["RMSE"],
+                      svm_res["RMSE"], nnet_res["RMSE"]), 4),
+  Test_Rsq  = round(c(knn_res["Rsquared"], mars_res["Rsquared"],
+                      svm_res["Rsquared"], nnet_res["Rsquared"]), 4)
+)
+print(results_72)
+```
+
+**Plots**
+
+```{r plots}
+# plot: test RMSE comparison
+ggplot(results_72, aes(x = reorder(Model, -Test_RMSE), y = Test_RMSE, fill = Model)) +
+  geom_col(width = 0.6, color = "white") +
+  geom_text(aes(label = round(Test_RMSE, 3)), vjust = -0.4, size = 4.5, fontface = "bold") +
+  scale_fill_manual(values = c("KNN"       = "#e07b54",
+                               "MARS"      = "#4CAF50",
+                               "SVM Radial"= "#5b8dd9",
+                               "Neural Net"= "#9c6fd6")) +
+  labs(title = "Q7.2 – Test Set RMSE by Model (Friedman1 Data)",
+       subtitle = "Lower RMSE = Better - MARS clearly dominates",
+       x = "Model", y = "Test RMSE") +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "none", plot.title = element_text(face = "bold"))
+
+# plot MARS variable importance
+vi72 <- data.frame(
+  Predictor   = c("X1","X4","X2","X5","X3","X6","X7","X8","X9","X10"),
+  Importance  = c(100, 75.33, 48.88, 15.63, 0, 0, 0, 0, 0, 0),
+  Informative = c(TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+ggplot(vi72, aes(x = reorder(Predictor, Importance), y = Importance, fill = Informative)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#4CAF50", "FALSE" = "#e07b54"),
+                    labels  = c("Non-informative (X6–X10)", "Informative (X1–X5)")) +
+  labs(title    = "Q7.2 – MARS Variable Importance",
+       subtitle = "MARS correctly selects only informative predictors X1–X5",
+       x = "Predictor", y = "Relative Importance (%)", fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+
+MARS is the best-performing model by a wide margin, achieving a test RMSE of 1.28
+and R² of 0.934 — roughly 40% lower error than the next best model. SVM Radial 
+comes in second (RMSE = 2.08, R² = 0.825), followed by Neural Net (RMSE = 2.27, R² = 0.793),
+and KNN is the weakest (RMSE = 3.20, R² = 0.682). MARS's dominance is expected 
+given the structure of the Friedman equation, which is built from piecewise-smooth
+nonlinear terms that MARS hinge functions are purpose-built to capture. The optimal
+configuration used degree=2 with 12 pruned terms, allowing it to model the interaction
+between X1 and X2. The Neural Net selected a network with size=3 and decay=0.1. 
+KNN struggles most due to the 5 noise variables diluting nearest-neighbor distances.
+
+
+**Does MARS Select the Informative Predictors?**
+
+
+```{r mars-varimp}
+varImp(marsModel)
+
+vi72 <- data.frame(
+  Predictor   = c("X1","X4","X2","X5","X3","X6","X7","X8","X9","X10"),
+  Importance  = c(100, 75.33, 48.88, 15.63, 0, 0, 0, 0, 0, 0),
+  Informative = c(TRUE, TRUE, TRUE, TRUE, TRUE,
+                  FALSE, FALSE, FALSE, FALSE, FALSE)
+)
+
+ggplot(vi72, aes(x = reorder(Predictor, Importance),
+                 y = Importance, fill = Informative)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE"  = "#4CAF50", "FALSE" = "#e07b54"),
+                    labels  = c("Non-informative (X6–X10)",
+                                "Informative (X1–X5)")) +
+  labs(title    = "Q7.2 – MARS Variable Importance",
+       subtitle = "MARS correctly selects only informative predictors X1–X5",
+       x = "Predictor", y = "Relative Importance (%)",
+       fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+MARS perfectly isolates X1–X5 and assigns zero importance to all noise variables 
+(X6–X10). X1 leads at 100%, followed by X4 (75.33%), X2 (48.88%), and X5 (15.63%).
+X3, while technically informative in the true equation, shows zero importance here
+because it enters as a squared term 20(x_3 - 0.5)^2, which is harder for additive
+hinge functions to capture on a small 200-observation sample. Most notably, none
+of the noise variables were selected at all, which reflects MARS's built-in variable
+selection through GCV-based backward pruning.
+
+
+### Question 7.5
+Exercise 6.3 describes data for a chemical manufacturing process. Use
+the same data imputation, data splitting, and pre-processing steps as before
+and train several nonlinear regression models.
+(a) Which nonlinear regression model gives the optimal resampling and test
+set performance?
+
+
+```{r load-data}
+data(ChemicalManufacturingProcess)
+```
+
+Pre-processing and Data Split
+
+```{r preprocess}
+set.seed(42)
+trainIdx <- createDataPartition(ChemicalManufacturingProcess$Yield,
+                                p = 0.8, list = FALSE)
+trainRaw <- ChemicalManufacturingProcess[ trainIdx, ]
+testRaw  <- ChemicalManufacturingProcess[-trainIdx, ]
+
+preProcVals <- preProcess(trainRaw[, -1],
+                          method = c("medianImpute", "nzv",
+                                     "center", "scale"))
+trainX <- predict(preProcVals, trainRaw[, -1])
+testX  <- predict(preProcVals, testRaw[, -1])
+trainY <- trainRaw$Yield
+testY  <- testRaw$Yield
+
+cat("Train:", nrow(trainX), "| Test:", nrow(testX),
+    "| Predictors after preprocessing:", ncol(trainX), "\n")
+
+ctrl10 <- trainControl(method = "cv", number = 10)
+```
+
+**KNN**
+
+```{r knn75, cache=TRUE}
+set.seed(100)
+knnMod <- train(
+  x          = trainX,
+  y          = trainY,
+  method     = "knn",
+  tuneLength = 10,
+  trControl  = ctrl10
+)
+knnPred75 <- predict(knnMod, testX)
+knn_ts75  <- postResample(knnPred75, testY)
+```
+
+**MARS**
+
+```{r mars75, cache=TRUE}
+set.seed(100)
+marsGrid75 <- expand.grid(degree = 1:2, nprune = 2:20)
+
+marsMod75 <- train(
+  x         = trainX,
+  y         = trainY,
+  method    = "earth",
+  tuneGrid  = marsGrid75,
+  trControl = ctrl10
+)
+marsPred75 <- predict(marsMod75, testX)
+mars_ts75  <- postResample(marsPred75, testY)
+```
+
+**SVM**
+
+```{r svm75, cache=TRUE}
+set.seed(100)
+svmMod75 <- train(
+  x          = trainX,
+  y          = trainY,
+  method     = "svmRadial",
+  tuneLength = 10,
+  trControl  = ctrl10
+)
+svmPred75 <- predict(svmMod75, testX)
+svm_ts75  <- postResample(svmPred75, testY)
+```
+
+**Neural Network**
+
+```{r nnet75, cache=TRUE}
+set.seed(100)
+nnetGrid75 <- expand.grid(
+  size  = c(1, 3, 5, 7),
+  decay = c(0, 0.001, 0.01, 0.1)
+)
+
+nnetMod75 <- train(
+  x          = trainX,
+  y          = trainY,
+  method     = "nnet",
+  tuneGrid   = nnetGrid75,
+  trControl  = ctrl10,
+  linout     = TRUE,
+  trace      = FALSE,
+  MaxNWts    = 10 * (ncol(trainX) + 1) + 10 + 1,
+  maxit      = 500
+)
+nnetPred75 <- predict(nnetMod75, testX)
+nnet_ts75  <- postResample(nnetPred75, testY)
+```
+
+
+### Performance Summary
+
+```{r summary-75}
+summ75 <- data.frame(
+  Model     = c("KNN", "MARS", "SVM", "NNet"),
+  CV_RMSE   = round(c(min(knnMod$results$RMSE),
+                      min(marsMod75$results$RMSE, na.rm = TRUE),
+                      min(svmMod75$results$RMSE,  na.rm = TRUE),
+                      min(nnetMod75$results$RMSE, na.rm = TRUE)), 4),
+  Test_RMSE = round(c(knn_ts75["RMSE"],  mars_ts75["RMSE"],
+                      svm_ts75["RMSE"],   nnet_ts75["RMSE"]), 4),
+  Test_Rsq  = round(c(knn_ts75["Rsquared"], mars_ts75["Rsquared"],
+                      svm_ts75["Rsquared"],  nnet_ts75["Rsquared"]), 4)
+)
+print(summ75)
+```
+
+```{r plot-perf-75}
+summ_long <- pivot_longer(summ75, cols = c(CV_RMSE, Test_RMSE),
+                           names_to = "Set", values_to = "RMSE")
+
+ggplot(summ_long, aes(x = reorder(Model, -RMSE), y = RMSE, fill = Set)) +
+  geom_col(position = "dodge", width = 0.6, color = "white") +
+  geom_text(aes(label = round(RMSE, 2)),
+            position = position_dodge(0.6), vjust = -0.3, size = 3.5) +
+  scale_fill_manual(values = c("CV_RMSE"   = "#5b8dd9",
+                               "Test_RMSE" = "#e07b54"),
+                    labels  = c("10-Fold CV RMSE", "Test RMSE")) +
+  labs(title    = "Q7.5(a) – Nonlinear Model Performance: Chemical Mfg. Process",
+       subtitle = "MARS achieves the lowest RMSE on both CV and test set",
+       x = "Model", y = "RMSE", fill = "") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+SVM gives the best overall results, with the lowest CV RMSE (1.03) and the lowest test RMSE (1.27) along with the highest R² (0.62). MARS is a close second in CV (1.09) but its test RMSE (1.37) is slightly worse than SVM, suggesting a marginal degree of overfitting to the cross-validation folds. KNN sits in the middle with a CV RMSE of 1.24 and test RMSE of 1.37, essentially matching MARS on the test set. The Neural Net is clearly the weakest model, with the highest CV RMSE (1.49) and a test RMSE of 1.43 paired with an R² of only 0.50, indicating it struggled to learn the structure of this dataset effectively.
+
+
+(b) Which predictors are most important in the optimal nonlinear regression model? Do either the biological or process variables dominate the
+list? How do the top ten important predictors compare to the top ten
+predictors from the optimal linear model?
+
+
+```{r varimp-75}
+vi_mars75 <- varImp(marsMod75, scale = TRUE)
+print(vi_mars75, top = 15)
+```
+
+```{r varimp-df-75}
+vi_df75 <- vi_mars75$importance
+vi_df75$Predictor <- rownames(vi_df75)
+vi_df75 <- vi_df75[order(-vi_df75$Overall), ]
+vi_df75$Type <- ifelse(grepl("Bio", vi_df75$Predictor),
+                       "Biological", "ManufacturingProcess")
+print(head(vi_df75, 10))
+```
+
+```{r plot-varimp-75}
+vi_clean <- vi_df75[!is.na(vi_df75$Overall), ]
+
+ggplot(head(vi_clean, 10),
+       aes(x = reorder(Predictor, Overall), y = Overall, fill = Type)) +
+  geom_col(width = 0.6, color = "white") +
+  coord_flip() +
+  scale_fill_manual(values = c("Biological"           = "#4CAF50",
+                               "ManufacturingProcess" = "#5b8dd9")) +
+  labs(title    = "Q7.5(b) – Top Variable Importance (MARS Model)",
+       subtitle = "BiologicalMaterial01 dominates; ManufacturingProcess variables also present",
+       x = "Predictor", y = "Relative Importance (%)",
+       fill = "Variable Type") +
+  theme_minimal(base_size = 13) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+```{r mars-summary-75}
+summary(marsMod75$finalModel)
+```
+
+Manufacturing process variables completely dominate the importance list — no biological material variables. ManufacturingProcess32 leads at 100%, followed by ManufacturingProcess09 (71.36%), ManufacturingProcess06 (46.82%), ManufacturingProcess17 and ManufacturingProcess39 (both at 41.93%), and ManufacturingProcess04 (37.31%). ManufacturingProcess01 and ManufacturingProcess33 also contribute at 21.91% each, appearing primarily through interaction terms. The final MARS model selected 13 terms from 9 predictors, including seven interaction terms — for example, ManufacturingProcess02 × ManufacturingProcess39 carries a very large coefficient (51.21), suggesting yield is highly sensitive to the joint behavior of these two process variables. This is something a linear model would miss. Compared to the Chapter 6 linear model, which typically surfaces a mix of both biological and process variables, the nonlinear MARS model points exclusively to process conditions and their interactions as the key drivers of yield.
+
+
+(c) Explore the relationships between the top predictors and the response for
+the predictors that are unique to the optimal nonlinear regression model.
+Do these plots reveal intuition about the biological or process predictors
+and their relationship with yield?
+
+
+```{r scatter-75, fig.width=12, fig.height=4.5}
+top_preds <- c("BiologicalMaterial01",
+               "ManufacturingProcess13",
+               "ManufacturingProcess17")
+colors_c  <- c("#4CAF50", "#5b8dd9", "#e07b54")
+
+plot_list <- lapply(seq_along(top_preds), function(i) {
+  pvar   <- top_preds[i]
+  df_tmp <- data.frame(
+    x = ChemicalManufacturingProcess[[pvar]],
+    y = ChemicalManufacturingProcess$Yield
+  )
+  df_tmp <- df_tmp[!is.na(df_tmp$x), ]
+  ggplot(df_tmp, aes(x = x, y = y)) +
+    geom_point(alpha = 0.5, color = colors_c[i], size = 2) +
+    geom_smooth(method = "loess", se = TRUE,
+                color = "black", linewidth = 0.9) +
+    labs(title = pvar, x = pvar, y = "Yield") +
+    theme_minimal(base_size = 11)
+})
+
+grid.arrange(
+  grobs = plot_list,
+  ncol  = 3,
+  top   = "Q7.5(c) – Top Predictors vs Yield\nNonlinear relationships captured via MARS hinge functions"
+)
+```
+The three scatter plots shiw clear nonlinear patterns. BiologicalMaterial01 shows a gradual positive relationship with yield — as the biological input quality increases from roughly 5 to 7, yield rises steadily, then flattens out, suggesting a saturation effect at higher values. ManufacturingProcess13 shows a more complex inverted pattern: yield is highest at lower process values (around 32–34) and drops sharply as the variable increases, indicating there is an optimal operating range beyond which this process setting hurts yield. ManufacturingProcess17 tells a similar story — yield peaks at moderate values (around 34–36) and declines on both ends, pointing to a nonlinear sweet spot. These patterns make physical sense, biological input quality sets a baseline for yield, while process variables have optimal operating windows that, if exceeded, can degrade the outcome. The LOESS smoothers confirm that none of these relationships are purely linear, validating the use of a nonlinear model like MARS over a standard linear regression.
