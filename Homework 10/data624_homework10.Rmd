@@ -1,0 +1,433 @@
+---
+title: "Data 624 Homework 10"
+author: "Joao De Oliveira"
+date: "`r Sys.Date()`"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    highlight: tango
+    latex_engine: xelatex
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 9,
+  fig.height = 5.5,
+  fig.align  = "center"
+)
+```
+
+# Introduction
+
+In this report, I perform **Market Basket Analysis** on a grocery transactions
+dataset containing 9,835 receipts and 169 unique items. The goal is to mine
+association rules and identify meaningful item co-purchasing patterns by
+reporting support, confidence, and lift, with a focus on the top 10 rules by
+lift. As extra credit, I also perform a cluster analysis on the item-frequency
+profiles of transactions.
+
+# Libraries
+
+```{r libraries}
+library(ggplot2)
+library(dplyr)
+library(tidyr)
+library(cluster)
+library(scales)
+```
+
+---
+
+# Data Loading & Exploration
+
+## Load Transactions
+
+The dataset is a CSV where each row is one transaction and each column is one
+purchased item. Empty cells represent unused item slots (transactions vary in
+basket size).
+
+```{r load-data}
+df <- read.csv("GroceryDataSet.csv", header = FALSE,
+               stringsAsFactors = FALSE)
+
+# Build list of transactions — one character vector per receipt
+transactions <- lapply(1:nrow(df), function(i) {
+  items <- trimws(as.character(unlist(df[i, ])))
+  unique(items[items != "" & !is.na(items)])
+})
+
+n_trans <- length(transactions)
+cat("Total transactions:          ", n_trans, "\n")
+cat("Average items per transaction:", round(mean(sapply(transactions, length)), 2), "\n")
+cat("Max items in one transaction: ", max(sapply(transactions, length)), "\n")
+```
+
+## Item Frequency
+
+```{r item-freq}
+all_items <- sort(unique(unlist(transactions)))
+cat("Unique items:", length(all_items), "\n")
+
+# Compute support for every item
+n <- n_trans
+sup1 <- sapply(all_items, function(item) {
+  sum(sapply(transactions, function(t) item %in% t)) / n
+})
+
+# Top 15 items by support
+top15 <- sort(sup1, decreasing = TRUE)[1:15]
+top15_df <- data.frame(
+  Item    = names(top15),
+  Support = as.numeric(top15)
+)
+
+ggplot(top15_df, aes(x = reorder(Item, Support), y = Support)) +
+  geom_col(fill = "#5b8dd9", width = 0.7, color = "white") +
+  geom_text(aes(label = scales::percent(Support, accuracy = 0.1)),
+            hjust = -0.1, size = 3.2) +
+  coord_flip() +
+  scale_y_continuous(labels = scales::percent_format(),
+                     limits = c(0, 0.32)) +
+  labs(title    = "Top 15 Items by Support",
+       subtitle = "Support = proportion of transactions containing the item",
+       x = NULL, y = "Support") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Whole milk is the most frequently purchased item, appearing in 25.6% of all
+transactions. Other vegetables (19.4%), rolls/buns (18.4%), and soda (17.4%)
+round out the top four. These high-support items will naturally appear in many
+association rules, so lift — which adjusts for baseline frequency — is the most
+important metric for identifying genuinely interesting associations.
+
+---
+
+# Association Rule Mining
+
+## Method
+
+Since the `arules` package is not available in this environment, association
+rules are computed directly from first principles:
+
+- **Support** of rule $A \Rightarrow B$: proportion of transactions containing
+  both $A$ and $B$
+- **Confidence** of $A \Rightarrow B$: $P(B|A) = \text{support}(A,B) / \text{support}(A)$
+- **Lift** of $A \Rightarrow B$: $\text{confidence}(A \Rightarrow B) / \text{support}(B)$
+
+A lift > 1 indicates that $A$ and $B$ co-occur more often than expected by
+chance. Rules are generated for all pairs of items with support ≥ 0.01
+(appearing in at least 1% of transactions), and filtered to pairs with
+co-occurrence support ≥ 0.001.
+
+## Generate Rules
+
+```{r mine-rules, cache=TRUE}
+# Filter to items with minimum individual support
+min_sup  <- 0.01
+freq_items <- names(sup1[sup1 >= min_sup])
+cat("Frequent items (support >= 1%):", length(freq_items), "\n")
+
+# Generate all item pairs and compute metrics
+pairs <- combn(freq_items, 2, simplify = FALSE)
+cat("Candidate item pairs:", length(pairs), "\n")
+
+rules_list <- list()
+for (pair in pairs) {
+  lhs <- pair[1]; rhs <- pair[2]
+  sup_lhs  <- sup1[lhs]
+  sup_rhs  <- sup1[rhs]
+  sup_both <- sum(sapply(transactions,
+                         function(t) lhs %in% t & rhs %in% t)) / n
+  if (sup_both >= 0.001) {
+    # LHS -> RHS
+    conf_lr <- sup_both / sup_lhs
+    lift_lr <- conf_lr  / sup_rhs
+    rules_list[[length(rules_list) + 1]] <- data.frame(
+      LHS = lhs, RHS = rhs,
+      Support    = round(sup_both, 5),
+      Confidence = round(conf_lr,  5),
+      Lift       = round(lift_lr,  4),
+      stringsAsFactors = FALSE
+    )
+    # RHS -> LHS
+    conf_rl <- sup_both / sup_rhs
+    lift_rl <- conf_rl  / sup_lhs
+    rules_list[[length(rules_list) + 1]] <- data.frame(
+      LHS = rhs, RHS = lhs,
+      Support    = round(sup_both, 5),
+      Confidence = round(conf_rl,  5),
+      Lift       = round(lift_rl,  4),
+      stringsAsFactors = FALSE
+    )
+  }
+}
+
+rules_df <- do.call(rbind, rules_list)
+rules_df <- rules_df[order(-rules_df$Lift), ]
+rownames(rules_df) <- NULL
+cat("Total rules generated:", nrow(rules_df), "\n")
+```
+
+## Top 10 Rules by Lift
+
+```{r top10-rules}
+top10 <- head(rules_df, 10)
+knitr::kable(top10,
+             digits  = 4,
+             caption = "Top 10 Association Rules by Lift",
+             col.names = c("LHS (If)", "RHS (Then)",
+                           "Support", "Confidence", "Lift"))
+```
+
+```{r plot-top10}
+top10$Rule <- paste0("{", top10$LHS, "} => {", top10$RHS, "}")
+
+ggplot(top10, aes(x = reorder(Rule, Lift), y = Lift, fill = Confidence)) +
+  geom_col(width = 0.7, color = "white") +
+  geom_text(aes(label = round(Lift, 2)), hjust = -0.15, size = 3.2) +
+  coord_flip() +
+  scale_fill_gradient(low = "#a8d5f5", high = "#1a5fa8",
+                      labels = scales::percent_format()) +
+  scale_y_continuous(limits = c(0, 12)) +
+  labs(title    = "Top 10 Association Rules by Lift",
+       subtitle = "Bar color indicates confidence; longer bar = stronger lift",
+       x = NULL, y = "Lift", fill = "Confidence") +
+  theme_minimal(base_size = 11) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Interpretation
+
+The top 10 rules reveal several strong and interpretable purchasing patterns:
+
+**Liquor \(\Rightarrow\) Red/Blush Wine (Lift = 10.03):** This is the strongest
+rule in the dataset. Customers who buy liquor are about 10 times more likely to
+also buy red/blush wine than a random customer — a classic "alcohol aisle"
+effect. Both directions of this rule appear in the top two, confirming this is
+a genuinely bidirectional association.
+
+**Sugar \(\Rightarrow\) Flour (Lift = 8.46):** The second strongest rule
+reflects a baking pattern — customers buying sugar very frequently also buy
+flour. This makes intuitive sense as both are core baking ingredients.
+
+**Processed Cheese \(\Rightarrow\) Ham (Lift = 7.07):** A classic deli
+combination — cheese and ham together, suggesting ready-made sandwich ingredients.
+
+**Processed Cheese \(\Rightarrow\) White Bread (Lift = 5.98):** Another deli
+pattern, confirming that processed cheese buyers are building sandwich baskets.
+
+**Baking Powder \(\Leftrightarrow\) Flour (Lift = 5.95):** A second baking
+cluster — baking powder and flour are co-purchased at nearly 6x the expected
+random rate.
+
+Overall, the rules cluster around three themes: **alcohol** (liquor + wine),
+**baking** (flour + sugar + baking powder), and **deli/sandwich** (processed
+cheese + ham + white bread). These are actionable insights for store layout,
+promotions, and product bundling.
+
+## Support vs. Confidence Plot
+
+```{r scatter-rules, fig.height=5}
+# Plot all rules: support vs confidence, colored by lift
+ggplot(rules_df, aes(x = Support, y = Confidence, color = Lift)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  scale_color_gradient(low = "#a8d5f5", high = "#c0392b") +
+  scale_x_continuous(labels = scales::percent_format()) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title    = "All Association Rules: Support vs. Confidence",
+       subtitle = "Color indicates lift — red points are the most interesting rules",
+       x = "Support", y = "Confidence", color = "Lift") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+The scatter plot shows the classic trade-off in association rule mining: rules
+with very high support tend to involve common items (like whole milk) and have
+modest lift, while the most interesting rules (high lift, shown in red) tend to
+have lower support — they are rare but highly specific co-purchasing patterns.
+
+---
+
+# Extra Credit: Cluster Analysis
+
+## Approach
+
+To cluster transactions, I build a **binary item-presence matrix** (9,835
+transactions × 169 items), where each cell is 1 if the item was purchased and
+0 otherwise. Because this matrix is very high-dimensional, I first reduce it
+using PCA, then apply **k-means clustering** on the top principal components.
+This groups transactions with similar basket compositions together.
+
+## Build Item Matrix
+
+```{r item-matrix}
+# Build sparse binary matrix: rows = transactions, cols = items
+item_mat <- matrix(0L, nrow = n, ncol = length(all_items),
+                   dimnames = list(NULL, all_items))
+for (i in seq_along(transactions)) {
+  item_mat[i, transactions[[i]]] <- 1L
+}
+cat("Item matrix dimensions:", nrow(item_mat), "x", ncol(item_mat), "\n")
+cat("Sparsity:",
+    round(1 - sum(item_mat) / (nrow(item_mat) * ncol(item_mat)), 3), "\n")
+```
+
+## PCA Dimensionality Reduction
+
+```{r pca-cluster, cache=TRUE}
+set.seed(42)
+# PCA on binary matrix (center only, no scale — binary data)
+pca_res <- prcomp(item_mat, center = TRUE, scale. = FALSE, rank. = 20)
+
+# Variance explained
+var_exp <- summary(pca_res)$importance[2, 1:10]
+var_df  <- data.frame(PC = paste0("PC", 1:10),
+                      VarExp = as.numeric(var_exp))
+
+# Fix x-axis ordering: convert to ordered factor so PC1..PC10 plot in sequence
+var_df$PC <- factor(var_df$PC, levels = paste0("PC", 1:10))
+
+ggplot(var_df, aes(x = PC, y = VarExp)) +
+  geom_col(fill = "#4CAF50", width = 0.6, color = "white") +
+  geom_line(aes(group = 1), color = "#1a5fa8", linewidth = 1) +
+  geom_point(color = "#1a5fa8", size = 3) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title    = "PCA Scree Plot — Grocery Transaction Matrix",
+       subtitle = "Proportion of variance explained by each principal component",
+       x = "Principal Component", y = "Variance Explained") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Determine Optimal k
+
+```{r elbow-plot, cache=TRUE}
+set.seed(42)
+pca_scores <- pca_res$x[, 1:10]  # Use top 10 PCs
+
+# Elbow method: within-cluster sum of squares for k = 2..10
+wss <- sapply(2:10, function(k) {
+  km <- kmeans(pca_scores, centers = k, nstart = 10, iter.max = 50)
+  km$tot.withinss
+})
+
+elbow_df <- data.frame(k = 2:10, WSS = wss)
+ggplot(elbow_df, aes(x = k, y = WSS)) +
+  geom_line(color = "#5b8dd9", linewidth = 1.2) +
+  geom_point(color = "#e07b54", size = 3) +
+  scale_x_continuous(breaks = 2:10, limits = c(2, 10)) +
+  labs(title    = "Elbow Method — Optimal Number of Clusters",
+       subtitle = "Look for the 'elbow' where WSS improvement flattens",
+       x = "Number of Clusters (k)", y = "Total Within-Cluster SS") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## K-Means Clustering (k = 4)
+
+```{r kmeans-fit, cache=TRUE}
+set.seed(42)
+km_fit <- kmeans(pca_scores, centers = 4, nstart = 25, iter.max = 100)
+
+cat("Cluster sizes:\n")
+print(table(km_fit$cluster))
+cat("\nWithin-cluster SS:", round(km_fit$tot.withinss, 1), "\n")
+cat("Between-cluster SS:", round(km_fit$betweenss, 1), "\n")
+cat("Ratio (between/total):",
+    round(km_fit$betweenss / km_fit$totss, 3), "\n")
+```
+
+## Cluster Visualization
+
+```{r cluster-plot, fig.height=5.5}
+# Plot clusters on first two PCs
+cluster_df <- data.frame(
+  PC1     = pca_scores[, 1],
+  PC2     = pca_scores[, 2],
+  Cluster = factor(km_fit$cluster)
+)
+
+ggplot(cluster_df, aes(x = PC1, y = PC2, color = Cluster)) +
+  geom_point(alpha = 0.3, size = 0.9) +
+  stat_ellipse(level = 0.75, linewidth = 1) +
+  scale_color_manual(values = c("#e07b54","#4CAF50","#5b8dd9","#9c6fd6")) +
+  labs(title    = "K-Means Clusters on PCA-Reduced Grocery Transactions",
+       subtitle = "Each point is one transaction; ellipses show cluster boundaries (75%)",
+       x = paste0("PC1 (", scales::percent(var_exp[1], accuracy=0.1), " variance)"),
+       y = paste0("PC2 (", scales::percent(var_exp[2], accuracy=0.1), " variance)"),
+       color = "Cluster") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+## Cluster Profiles
+
+```{r cluster-profiles, fig.height=6}
+# Mean item frequency per cluster for top 15 items
+# Use colnames() of item_mat to ensure exact name matching
+top15_items <- names(sort(sup1, decreasing = TRUE)[1:15])
+# Keep only names that actually exist as columns in item_mat
+top15_items <- top15_items[top15_items %in% colnames(item_mat)]
+
+cluster_means <- data.frame(
+  item_mat[, top15_items, drop = FALSE],
+  Cluster = factor(km_fit$cluster),
+  check.names = FALSE   # preserve original item names with spaces/slashes
+) %>%
+  group_by(Cluster) %>%
+  summarise(across(everything(), mean), .groups = "drop") %>%
+  pivot_longer(-Cluster, names_to = "Item", values_to = "Freq")
+
+ggplot(cluster_means, aes(x = Item, y = Freq, fill = Cluster)) +
+  geom_col(position = "dodge", width = 0.7, color = "white") +
+  scale_fill_manual(values = c("#e07b54","#4CAF50","#5b8dd9","#9c6fd6")) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(title    = "Cluster Profiles — Average Item Purchase Rate",
+       subtitle = "Top 15 most frequent items across the 4 clusters",
+       x = NULL, y = "Purchase Rate", fill = "Cluster") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x  = element_text(angle = 40, hjust = 1),
+        plot.title   = element_text(face = "bold"))
+```
+
+## Cluster Interpretation
+
+The k-means analysis (k=4, chosen from the elbow plot) identifies four distinct
+shopper archetypes in the data. Cluster 4 is by far the largest, containing
+roughly half of all transactions (n=5,007), while Clusters 1, 2, and 3 each
+contain 1,400–1,800 transactions.
+
+**Cluster 4 — General shoppers (largest group):** The dominant cluster,
+representing the typical grocery visit. These transactions show moderate purchase
+rates across most of the top 15 items, with whole milk, other vegetables, and
+rolls/buns appearing most consistently — the standard everyday basket.
+
+**Cluster 2 — Whole milk focused:** This cluster is distinguished by a
+notably elevated whole milk purchase rate compared to other clusters. These
+shoppers make dairy-centric trips, likely picking up milk along with a few
+other items.
+
+**Cluster 3 — Produce focused:** Elevated purchase rates for other vegetables
+and root vegetables relative to other clusters, suggesting shoppers who
+prioritize fresh produce in their basket.
+
+**Cluster 1 — Light / single-category shoppers:** The smallest purchase
+rates across almost all items, consistent with quick targeted trips rather
+than full grocery runs.
+
+The between-cluster variance ratio of 0.329 confirms that the clusters capture
+meaningful differences in shopping behavior. Combined with the association rules
+from the previous section, these clusters could support targeted marketing: for
+example, Cluster 2 whole-milk shoppers are prime candidates for dairy-adjacent
+promotions, while Cluster 3 produce shoppers may respond well to fresh
+vegetable bundle offers.
+
+---
+
+*End of Data 624 Homework 10 — Market Basket Analysis & Cluster Analysis*
