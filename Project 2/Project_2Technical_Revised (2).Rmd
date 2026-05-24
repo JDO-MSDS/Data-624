@@ -1,0 +1,633 @@
+---
+title: "Project 2 DATA 624"
+author: ''
+date: "2026-05-12"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    warning = FALSE,
+    message = FALSE,
+    fig.width = 9,
+    fig.height = 5
+)
+```
+
+# Introduction
+
+The goal of this section is to better understand the beverage manufacturing dataset before predictive modeling begins. Exploratory Data Analysis (EDA), data cleaning, and data transformations were performed to identify patterns, missing values, outliers, and relationships between variables related to beverage pH.
+
+This process is important because understanding the data helps ensure that later predictive models are built using reliable and meaningful information.
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(caret)
+library(corrplot)
+library(GGally)
+library(skimr)
+library(naniar)
+library(VIM)
+library(knitr)
+library(kableExtra)
+library(gbm)
+library(writexl)
+```
+
+The training set contains 2571 observations across 33 variables (including the target, `PH`). The test set contains 267 observations with `PH` fully withheld.
+
+```{r}
+#Load training data
+bev_train <- read_excel("StudentData.xlsx")
+
+#Load evaluation data
+bev_test <- read_excel("StudentEvaluation.xlsx")
+```
+
+**The first step** was to get a quick look and explore the structure and contents of the dataset.
+
+```{r}
+glimpse(bev_train)
+skim(bev_train)
+```
+
+```{r}
+#View structure of dataset
+str(bev_train)
+
+#Summary statistics
+summary(bev_train)
+
+#Number of rows and columns
+nrow(bev_train)
+ncol(bev_train)
+```
+
+A few things stood out:
+
+- **Brand Code** is the only non-numeric variable. It is a character column with 4 categories (A, B, C, D) and has 120 missing values.
+- **PH** is the target. It has only 4 missing values in training, which will simply be dropped.
+- **MFR** has 212 missing values (~8.1%), it is by far the most incomplete predictor.
+- Most other columns have small amounts of missingness (under 2.5%).
+
+**Target Variable: PH**
+Before doing anything else, let's understand what is being predicted.
+
+```{r}
+#Distribution of PH
+ggplot(bev_train, aes(x = PH)) +
+    geom_histogram(bins = 30, fill = "#8590cf") +
+    labs(
+        title = "Distribution of Beverage PH",
+        x = "PH", y = "Count"
+        )
+```
+
+PH ranges from 7.88 to 9.36 with a mean of ~8.55 and a standard deviation of only 0.17. The distribution is fairly symmetric and roughly normal, which is good news for regression models.
+The 4 missing PH values in training are a negligible loss, we'll simply drop those rows rather than impute the target. The histogram does present an outlier (the 9.36) value, but that isn't so strange, given that beverages of such alkalinity exist (alakine water, for example), so this high number does not necessarily indicate an issue with the data itself.
+
+```{r}
+#Drop missing rows from target
+bev_train <- bev_train |> filter(!is.na(PH))
+```
+
+**Missing values** can negatively affect predictive modeling performance, so the dataset was checked for incomplete observations aside from the ones in the target.
+
+```{r}
+#Count missing values in each column
+colSums(is.na(bev_train))
+
+#Missing value percentages
+missing_percent <- colSums(is.na(bev_train)) / nrow(bev_train) * 100
+sort(missing_percent, decreasing = TRUE)
+
+#Plot of missing data by variable
+bev_train |>
+    gg_miss_var(show_pct = TRUE) +
+    labs(title = "Missingness by Variable (% of rows)"
+    )
+```
+
+A key question before handling this missing data: are missing values scattered randomly, or do they cluster on certain observations?
+If the data is MNAR (Missing not at random), that would be a really difficult missing data challenge to handle. MCAR (Missing Completely At Random) or MAR (Missing At Random) are easier to handle.
+
+```{r fig.width=14, fig.height=8}
+#Which variables tend to be missing together?
+gg_miss_upset(bev_train, nsets = 6)
+```
+
+Interpretation of the upSet plot:
+The largest vertical bars represent MFR, Brand Code, and Filler Speed going missing entirely on their own. The remaining co-occurrences on the right are tiny and don't suggest any systematic pattern. This points to the data being MAR, so imputation is a reasonable approach.
+
+**Closer Look at MFR**
+MFR stood out because it has the most missing values by far (~8.2%), so it's worth a closer observation before deciding how to handle it, unlike the other missing values, for which we decided to use imputation.
+
+```{r}
+#What does the MFR distribution actually look like?
+bev_train |>
+    filter(!is.na(MFR)) |>
+    ggplot(aes(x = MFR)) +
+    geom_histogram(bins = 30, fill = "#8590cf") +
+    labs(
+        title = "Distribution of MFR",
+        x = "MFR", y = "Count"
+    )
+```
+
+The distribution is left-skewed, with a suspicious tail of low values.
+
+```{r}
+#How many values fall in that suspicious low range?
+bev_train |>
+    summarise(
+        below_500 = sum(MFR < 500,  na.rm = TRUE),
+        from_500_650 = sum(MFR >= 500 & MFR <650, na.rm = TRUE),
+        above_650 = sum(MFR >= 650, na.rm = TRUE),
+        missing = sum(is.na(MFR))
+    )
+```
+
+The vast majority of MFR values sit between 650 and 760. However, there are 67 values below 500 (with a minimum of 31.4) that look a bit odd. A reading of 31 alongside a majority of values being ~725 is strange, it could be a sensor error rather than a real observation, but we really would need more information about what this variable actually is before making a judgment. These will be kept in for now since removing them is a judgment call better left for the modeling part of the project, and median imputation won't be much affected by them anyway.
+**It's also worth noting that MFR has almost no linear relationship with PH (we'll see this in the correlation section right below), which limits how much this variable can hurt or help the models.**
+
+**Correlation with PH**
+Before cleaning anything, it helps to understand which variables actually relate to our target. This gives us a sense of what matters and helps us catch anything unexpected.
+```{r}
+#Correlation of each numeric predictor with target PH
+ph_cor <- bev_train |>
+    select(where(is.numeric)) |>
+    cor(use = "pairwise.complete.obs") |>
+    as.data.frame() |>
+    rownames_to_column("variable") |>
+    select(variable, PH) |>
+    filter(variable != "PH") |>
+    arrange(desc(abs(PH)))
+
+ph_cor
+
+#Plot corr
+ph_cor |>
+    ggplot(aes(x = reorder(variable, abs(PH)), y = PH, fill = PH > 0)) +
+    geom_col() +
+    coord_flip() +
+    scale_fill_manual(values = c("firebrick", "#8590cf"), labels = c("Negative", "Positive")) +
+    labs(title = "Correlation of each predictor with PH",
+    x = NULL, y = "Pearson r", fill = "Direction"
+    )
+```
+
+Mnf Flow is by far the strongest predictor (-0.45), meaning that as manufacturing flow increases, pH tends to drop. Bowl Setpoint, Filler Level, Usage cont, and Pressure Setpoint are the next best correlations. On the other end, MFR, Air Pressurer, and Filler Speed have near-zero linear correlation with PH. That doesn't automatically mean they're useless, as tree-based models can pick up non-linear patterns, but they're unlikely to be the most important features in any model.
+
+**Correlation Among Predictors**
+It's also worth checking whether any predictors are highly correlated with each other, since that can cause problems for linear models (multicollinearity).
+```{r}
+#Full corr matrix
+cor_matrix <- bev_train |>
+    select(where(is.numeric)) |>
+    cor(use = "pairwise.complete.obs")
+
+corrplot(cor_matrix,
+method = "color", type = "lower", order = "hclust", tl.cex = 0.6, tl.col = "black", title = "Predictor Correlation Matrix", mar = c(0, 0, 2, 0))
+```
+
+```{r}
+#Flag pairs with absolute value r > 0.7 so we can call them out explicitly
+cor_matrix |>
+    as.data.frame() |>
+    rownames_to_column("var1") |>
+    pivot_longer(-var1, names_to = "var2", values_to = "r") |>
+    
+    filter(var1 < var2,
+    var1 != "PH", var2 != "PH",
+    abs(r) > 0.7) |>
+        arrange(desc(abs(r)))
+```
+
+**There are quite a few variables that are strongly correlated with each other, as can be seen in the correlation matrix. For linear models, including all simultaneously could inflate standard errors. Tree-based models will handle this naturally, but it's something to be aware of when training the models.**
+
+**Brand Code**
+```{r}
+#Distribution of Brand Code
+bev_train |>
+    count(`Brand Code`, sort = TRUE) |>
+    mutate(pct = round(n / sum(n) * 100, 1))
+
+#Does PH differ by brand?
+bev_train |>
+    filter(!is.na(`Brand Code`)) |>
+    ggplot(aes(x = `Brand Code`, y = PH, fill = `Brand Code`)) +
+    geom_boxplot(alpha = 0.7) +
+    labs(title = "PH by Brand Code", x = "Brand Code", y = "PH") + theme(legend.position = "none")
+```
+
+Brand B alone makes up almost half of the records. There are also pH differences across brands, for example, Brand C in particular trends lower. **This variable carries signal and needs to be kept. The 120 missing values can be treated as their own "Unknown" category rather than dropped or guessed.**
+
+**xers**
+```{r}
+#Before cleaning, let's check for extreme values in the numeric predictors
+#Boxplots of all numeric predictors to spot outliers visually
+bev_train |>
+    select(where(is.numeric), -PH) |>
+    pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+    ggplot(aes(x = variable, y = value)) +
+    geom_boxplot(fill = "#8590cf", alpha = 0.7, outlier.alpha = 0.3) +
+    facet_wrap(~ variable, scales = "free") +
+    labs(title = "Distribution of Numeric Predictors", x = NULL, y = NULL) +
+    theme(axis.text.x = element_blank())
+```
+
+Several variables show visible outliers in their distributions. Filler Speed and MFR, for example, have extreme low values that stand apart from the bulk of the data, they could be a mistake in the data entry rather than normal readings. Temperature and Oxygen Filler, for example, have noticeable tails. 
+
+**These outliers will all be left as-is since tree-based models are robust to outliers, but they should be considered if using linear or distance-based approaches.**
+
+**Data Cleaning**
+
+Below is the cleaning process of the data, with explanations as to why it was done.
+```{r}
+#Brand Code
+#fill NA with "Unknown", then convert to factor
+#We save the factor levels from training to apply the same ones to test later
+#This prevents the test set from inventing new levels the model has never seen
+
+bev_train <- bev_train |>
+    mutate(`Brand Code` = if_else(is.na(`Brand Code`), "Unknown", `Brand Code`), `Brand Code` = factor(`Brand Code`))
+
+brand_levels <- levels(bev_train$`Brand Code`)
+
+#Apply same levels to test - NOT new levels computed from test
+bev_test <- bev_test |> 
+    mutate(`Brand Code` = if_else(is.na(`Brand Code`), "Unknown", `Brand Code`), `Brand Code` = factor(`Brand Code`, levels = brand_levels))
+```
+
+```{r}
+#Median imputation for all numeric NAs
+#Medians are computed from training only, then applied to both sets
+#Preprocessing parameters must come from training data only to avoid leakage
+
+numeric_cols <- bev_train |>
+    select(where(is.numeric), -PH) |> names()
+
+#Store training medians
+train_medians <- bev_train |>
+    summarise(across(all_of(numeric_cols), \(x) median(x, na.rm = TRUE)))
+
+#Impute training
+for (col in numeric_cols) {
+    bev_train[[col]][is.na(bev_train[[col]])] <- train_medians[[col]]
+}
+
+#Impute test using the SAME training medians
+for (col in numeric_cols) {
+    bev_test[[col]][is.na(bev_test[[col]])] <- train_medians[[col]]
+}
+```
+
+```{r}
+#Verifies that no NAs remain
+cat("Remaining NAs in training:\n")
+colSums(is.na(bev_train))
+
+#Only PH should be NA in test
+cat("\nRemaining NAs in test:\n")
+colSums(is.na(bev_test))
+```
+
+**Investigating suspicious values**
+```{r}
+#These values look suspicious
+#Quantify how many rows are affected before deciding whether to remove them
+
+bev_train |>
+  summarise(
+    mnf_flag = sum(`Mnf Flow` <= -100, na.rm = TRUE),          #-100 / -100.2 appear to possibly be error codes
+    hydp1_flag = sum(`Hyd Pressure1` == 0, na.rm = TRUE),      #zero hydraulic pressure = possibly sensor off
+    hydp2_flag = sum(`Hyd Pressure2` == 0, na.rm = TRUE),
+    hydp3_flag = sum(`Hyd Pressure3` == 0, na.rm = TRUE),
+    fspeed_flag = sum(`Filler Speed` < 2000, na.rm = TRUE),    # ~998 RPM is weird vs normal range of ~4000
+    cflow_flag = sum(`Carb Flow` < 100, na.rm = TRUE),         #values like 26-30 vs normal ~3000 are off
+    mfr_flag = sum(MFR < 500, na.rm = TRUE)
+  )
+```
+
+Several variables contain values that appear odd. For example, Mnf Flow has 1183 readings at exactly -100 or -100.2, Hyd Pressure1/2/3 have hundreds of zero readings, and Filler Speed and Carb Flow each have values far below their average range seen in the rest of the data. However, the scale of these flags, particularly Mnf Flow (removing it affects 46% of rows) and the hydraulic pressure zeros (800+ rows each), would make removal risky. Values this prevalent possibly represent a distinct operating state of the machine rather than data entry errors. Removing them will discard nearly half the training data and potentially eliminate an entire portion of the manufacturing pattern that the model needs to learn from. These values should be retained, and our group should be aware that **Mnf Flow** in particular may behave as a near-categorical variable given its bimodal distribution.
+
+
+## Prepare Feature Matrices
+
+```{r feature-matrix}
+# Separate predictors from target
+X_train <- bev_train |> select(-PH)
+y_train <- bev_train$PH
+
+X_test  <- bev_test  |> select(-PH)
+
+cat("X_train:", nrow(X_train), "x", ncol(X_train), "\n")
+cat("X_test: ", nrow(X_test),  "x", ncol(X_test),  "\n")
+cat("y_train: n =", length(y_train), "| mean =", round(mean(y_train), 3),
+    "| sd =", round(sd(y_train), 3), "\n")
+```
+
+---
+
+# Modeling
+
+We evaluated four model families, all assessed via 5-fold cross-validation on the training set. **RMSE (Root Mean Squared Error)** is the primary metric, with standard deviation of CV scores used as a stability tiebreaker.
+
+## Cross-Validation Setup
+
+```{r cv-setup}
+set.seed(42)
+cv_ctrl <- trainControl(
+    method  = "cv",
+    number  = 5,
+    verboseIter = FALSE
+)
+```
+
+## Model 1 — Linear Regression (OLS Baseline)
+
+```{r lm-model, cache=TRUE}
+set.seed(42)
+lm_fit <- train(
+    PH ~ .,
+    data      = bev_train,
+    method    = "lm",
+    trControl = cv_ctrl
+)
+
+lm_results <- lm_fit$resample
+cat("Linear Regression — CV RMSE: Mean =", round(mean(lm_results$RMSE), 4),
+    " | SD =", round(sd(lm_results$RMSE), 4), "\n")
+```
+
+OLS serves as a baseline. High standard deviation is expected given severe multicollinearity (21 pairs at |r| > 0.70) and sensitivity to the extreme Mnf Flow values.
+
+## Model 2 — Ridge Regression
+
+```{r ridge-model, cache=TRUE}
+set.seed(42)
+ridge_fit <- train(
+    PH ~ .,
+    data      = bev_train,
+    method    = "ridge",
+    trControl = cv_ctrl,
+    tuneLength = 10
+)
+
+ridge_results <- ridge_fit$resample
+cat("Ridge Regression — CV RMSE: Mean =", round(mean(ridge_results$RMSE), 4),
+    " | SD =", round(sd(ridge_results$RMSE), 4), "\n")
+cat("Best lambda:", ridge_fit$bestTune$lambda, "\n")
+```
+
+L2 regularization substantially reduces variance compared to OLS and handles multicollinearity. Still limited by the linear assumption.
+
+## Model 3 — Random Forest
+
+```{r rf-model, cache=TRUE}
+set.seed(42)
+rf_fit <- train(
+    PH ~ .,
+    data      = bev_train,
+    method    = "rf",
+    trControl = cv_ctrl,
+    tuneLength = 3,
+    ntree      = 200
+)
+
+rf_results <- rf_fit$resample
+cat("Random Forest — CV RMSE: Mean =", round(mean(rf_results$RMSE), 4),
+    " | SD =", round(sd(rf_results$RMSE), 4), "\n")
+cat("Best mtry:", rf_fit$bestTune$mtry, "\n")
+```
+
+Strong performer. Handles non-linearity and correlated predictors naturally via bootstrap aggregation. Slightly more variable across folds than Gradient Boosting.
+
+## Model 4 — Gradient Boosting (GBM)
+
+```{r gbm-model, cache=TRUE}
+gbm_grid <- expand.grid(
+    n.trees           = 200,
+    interaction.depth = 4,
+    shrinkage         = 0.05,
+    n.minobsinnode    = 10
+)
+
+set.seed(42)
+gbm_fit <- train(
+    PH ~ .,
+    data      = bev_train,
+    method    = "gbm",
+    trControl = cv_ctrl,
+    tuneGrid  = gbm_grid,
+    verbose   = FALSE
+)
+
+gbm_results <- gbm_fit$resample
+cat("Gradient Boosting — CV RMSE: Mean =", round(mean(gbm_results$RMSE), 4),
+    " | SD =", round(sd(gbm_results$RMSE), 4), "\n")
+```
+
+Sequential boosting of shallow trees (max depth = 4). Lower learning rate (0.05) with more trees reduces overfitting while capturing complex patterns.
+
+## Model Comparison
+
+```{r model-comparison}
+comparison <- tibble(
+    Model = c("Linear Regression", "Ridge Regression", "Random Forest", "Gradient Boosting"),
+    CV_RMSE_Mean = c(
+        round(mean(lm_results$RMSE),    4),
+        round(mean(ridge_results$RMSE), 4),
+        round(mean(rf_results$RMSE),    4),
+        round(mean(gbm_results$RMSE),   4)
+    ),
+    CV_RMSE_SD = c(
+        round(sd(lm_results$RMSE),    4),
+        round(sd(ridge_results$RMSE), 4),
+        round(sd(rf_results$RMSE),    4),
+        round(sd(gbm_results$RMSE),   4)
+    ),
+    Selected = c("", "", "", "✓")
+)
+
+comparison |>
+    kable(caption = "5-Fold Cross-Validation Results — All Models",
+          col.names = c("Model", "CV RMSE (Mean)", "CV RMSE (Std Dev)", "Selected")) |>
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+    row_spec(4, bold = TRUE, background = "#E2EFDA")
+```
+
+```{r rmse-plot}
+comparison |>
+    ggplot(aes(x = reorder(Model, CV_RMSE_Mean), y = CV_RMSE_Mean,
+               fill = Model == "Gradient Boosting")) +
+    geom_col(alpha = 0.85) +
+    geom_errorbar(aes(ymin = CV_RMSE_Mean - CV_RMSE_SD,
+                      ymax = CV_RMSE_Mean + CV_RMSE_SD), width = 0.3) +
+    coord_flip() +
+    scale_fill_manual(values = c("grey60", "#2E75B6"), guide = "none") +
+    labs(title = "5-Fold CV RMSE by Model (lower is better)",
+         subtitle = "Error bars show ± 1 standard deviation across folds",
+         x = NULL, y = "CV RMSE") +
+    theme_minimal(base_size = 13)
+```
+
+## Final Model Selection: Gradient Boosting
+
+**Gradient Boosting is selected** for the following reasons:
+
+1. **Best stability** — lowest CV standard deviation (0.038), meaning prediction error is consistent across data subsets. In a regulated environment, consistent predictions are as important as average accuracy.
+2. **Handles non-linearity** — GBM natively captures non-linear interactions, critical given Mnf Flow's bimodal distribution and complex manufacturing interactions.
+3. **Robust to outliers** — unlike linear models, tree-based GBM is not distorted by the −100 Mnf Flow readings or zero hydraulic pressures.
+4. **No feature scaling required** — tree splits are scale-invariant, eliminating a source of potential data leakage.
+5. **Competitive RMSE** — 0.1648 vs. Random Forest's 0.1627, a difference of 0.002 that is not operationally meaningful, while GBM's stability advantage is real.
+
+**Hyperparameters used:**
+
+| Parameter | Value |
+|---|---|
+| n.trees | 200 |
+| interaction.depth | 4 |
+| shrinkage (learning rate) | 0.05 |
+| n.minobsinnode | 10 |
+| Validation | 5-fold CV |
+
+---
+
+# Feature Importance
+
+```{r feature-importance, fig.height=7}
+imp_raw <- varImp(gbm_fit, scale = TRUE)$importance
+imp_df  <- imp_raw |>
+    rownames_to_column("Variable") |>
+    rename(Importance = Overall) |>
+    arrange(desc(Importance))
+
+# Top 15
+imp_df |>
+    head(15) |>
+    ggplot(aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "#2E75B6", alpha = 0.85) +
+    coord_flip() +
+    labs(title = "Top 15 Predictors — Gradient Boosting Feature Importance",
+         subtitle = "Scaled to 100; represents relative contribution to error reduction",
+         x = NULL, y = "Relative Importance") +
+    theme_minimal(base_size = 12)
+```
+
+```{r importance-table}
+imp_df |>
+    head(15) |>
+    mutate(Rank = row_number(), Importance = round(Importance, 2)) |>
+    select(Rank, Variable, Importance) |>
+    kable(caption = "Top 15 Predictors by Feature Importance (GBM)") |>
+    kable_styling(bootstrap_options = c("striped", "hover"), full_width = FALSE) |>
+    row_spec(1:3, bold = TRUE, background = "#E2EFDA")
+```
+
+**Key takeaways:**
+
+- **Mnf Flow** is the dominant predictor by a wide margin. Its bimodal distribution (−100 cluster vs. 700–760 cluster) is being leveraged by the GBM's split-based logic.
+- **Alch Rel, Temperature, and Brand Code** form the next tier. Notably, Alch Rel and Temperature have low linear correlation with PH but high GBM importance — confirming that non-linear relationships are being captured.
+- **Brand Code** appears in the top 5, validating the decision to retain and encode it rather than drop the variable.
+- The importance is spread across many variables (no single variable above 28%), suggesting a genuinely multi-factorial process.
+
+---
+
+# Predictions
+
+## Generate Test Set Predictions
+
+```{r predict}
+ph_predictions <- predict(gbm_fit, newdata = X_test)
+
+cat("Predictions generated:", length(ph_predictions), "\n")
+cat("Predicted PH range:  ", round(min(ph_predictions), 3), "—",
+                              round(max(ph_predictions), 3), "\n")
+cat("Predicted PH mean:   ", round(mean(ph_predictions), 3), "\n")
+cat("Predicted PH SD:     ", round(sd(ph_predictions), 3), "\n")
+cat("Training PH mean:    ", round(mean(y_train), 3), "\n")
+```
+
+```{r pred-distribution}
+tibble(PH_Predicted = ph_predictions) |>
+    ggplot(aes(x = PH_Predicted)) +
+    geom_histogram(bins = 30, fill = "#2E75B6", color = "white", alpha = 0.85) +
+    geom_vline(xintercept = mean(ph_predictions), color = "firebrick",
+               linetype = "dashed", linewidth = 1) +
+    labs(title = "Distribution of Predicted PH Values (Test Set)",
+         subtitle = paste0("n = ", length(ph_predictions),
+                           " | Mean = ", round(mean(ph_predictions), 3),
+                           " | Red dashed = mean"),
+         x = "Predicted PH", y = "Count") +
+    theme_minimal(base_size = 13)
+```
+
+The predicted mean (8.547) closely matches the training mean (8.549), indicating no systematic bias. The predicted range (8.21–8.84) is tighter than the training range (7.88–9.36), which is expected — the model predicts conditional means, not individual realizations.
+
+## Export Predictions
+
+```{r export-predictions}
+predictions_out <- bev_test |>
+    mutate(PH_Predicted = round(ph_predictions, 4)) |>
+    select(`Brand Code`, PH_Predicted, everything())
+
+# Save to Excel
+write_xlsx(
+    list(
+        "PH Predictions"    = tibble(Observation = seq_along(ph_predictions),
+                                      PH_Predicted = round(ph_predictions, 4)),
+        "Model Comparison"  = comparison,
+        "Feature Importance" = imp_df |> head(15) |>
+                                  mutate(Rank = row_number()) |>
+                                  select(Rank, Variable, Importance)
+    ),
+    path = "pH_Predictions_ABCBeverage.xlsx"
+)
+
+cat("Predictions exported to: pH_Predictions_ABCBeverage.xlsx\n")
+```
+
+---
+
+# Model Diagnostics
+
+## Residual Analysis (Training Set)
+
+```{r residuals}
+train_preds <- predict(gbm_fit, newdata = X_train)
+residuals   <- y_train - train_preds
+
+tibble(Fitted = train_preds, Residual = residuals) |>
+    ggplot(aes(x = Fitted, y = Residual)) +
+    geom_point(alpha = 0.3, color = "#2E75B6") +
+    geom_hline(yintercept = 0, color = "firebrick", linetype = "dashed") +
+    geom_smooth(method = "loess", se = FALSE, color = "orange") +
+    labs(title = "Residuals vs. Fitted Values (Training Set)",
+         x = "Fitted PH", y = "Residual (Actual − Predicted)") +
+    theme_minimal(base_size = 13)
+```
+
+```{r residual-hist}
+tibble(Residual = residuals) |>
+    ggplot(aes(x = Residual)) +
+    geom_histogram(bins = 40, fill = "#2E75B6", color = "white", alpha = 0.85) +
+    labs(title = "Distribution of Training Residuals",
+         x = "Residual", y = "Count") +
+    theme_minimal(base_size = 13)
+```
+
+```{r train-rmse}
+train_rmse <- sqrt(mean(residuals^2))
+train_r2   <- cor(y_train, train_preds)^2
+cat("Training RMSE:", round(train_rmse, 4), "\n")
+cat("Training R²:  ", round(train_r2, 4), "\n")
+cat("Note: CV RMSE (", round(mean(gbm_results$RMSE), 4),
+    ") is the appropriate out-of-sample estimate.\n")
+```
+
+Training RMSE will be lower than CV RMSE (in-sample overfitting is expected). The 5-fold CV RMSE is the honest estimate of generalization performance.
